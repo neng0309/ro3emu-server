@@ -1,0 +1,20 @@
+name: Auto Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # เช็คอัปเดตทุกวันเวลา 07:00 น. (เวลาไทย)
+  workflow_dispatch:      # สามารถกดสั่งรันเองได้
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync upstream changes
+        uses: aormsby/Fork-Sync-With-Upstream-Action@v3.4.1
+        with:
+          upstream_sync_repo: aethai/ro3emu-server
+          upstream_sync_branch: main
+          target_branch: main
+          test_mode: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
