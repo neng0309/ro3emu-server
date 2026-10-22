@@ -14,7 +14,7 @@ jobs:
         with:
           upstream_sync_repo: aethai/ro3emu-server
           upstream_sync_branch: main
-          target_branch: main
+          target_sync_branch: main
           test_mode: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
