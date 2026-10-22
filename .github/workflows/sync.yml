@@ -2,19 +2,31 @@ name: Auto Sync Upstream
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # เช็คอัปเดตทุกวันเวลา 07:00 น. (เวลาไทย)
-  workflow_dispatch:      # สามารถกดสั่งรันเองได้
+    - cron: '0 0 * * *'  # เช็คอัปเดตทุกวัน เวลา 07:00 น. (เวลาไทย)
+  workflow_dispatch:      # กดสั่งรันเองได้จากหน้าเว็บ
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Sync upstream changes
-        uses: aormsby/Fork-Sync-With-Upstream-Action@v3.4.1
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          upstream_sync_repo: aethai/ro3emu-server
-          upstream_sync_branch: main
-          target_sync_branch: main
-          test_mode: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Pull upstream changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Add upstream repository
+          git remote add upstream https://github.com/aethai/ro3emu-server.git
+          git fetch upstream
+          
+          # Merge changes from upstream main to local main
+          git checkout main
+          git merge upstream/main --allow-unrelated-histories || echo "No merge conflicts or already up to date"
+          
+          # Push to your repository
+          git push origin main
