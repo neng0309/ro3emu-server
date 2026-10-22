@@ -2,8 +2,11 @@ name: Auto Sync Upstream
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # เช็คอัปเดตทุกวัน เวลา 07:00 น. (เวลาไทย)
-  workflow_dispatch:      # กดสั่งรันเองได้จากหน้าเว็บ
+    - cron: '0 0 * * *'  # 07:00 เวลาไทย
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   sync:
@@ -12,21 +15,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Pull upstream changes
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Add upstream repository
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git remote add upstream https://github.com/aethai/ro3emu-server.git
-          git fetch upstream
-          
-          # Merge changes from upstream main to local main
-          git checkout main
-          git merge upstream/main --allow-unrelated-histories || echo "No merge conflicts or already up to date"
-          
-          # Push to your repository
+          git fetch upstream main
+
+          # merge โดยให้ upstream ชนะเมื่อ conflict
+          git merge upstream/main --allow-unrelated-histories -X theirs --no-commit --no-ff || true
+
+          # ไม่เอาไฟล์ workflow จาก upstream (กัน push โดนบล็อก)
+          git reset -q HEAD -- .github || true
+          git checkout -- .github 2>/dev/null || true
+          git clean -fdq .github || true
+
+          git add -A
+          git commit -m "Sync from upstream" || echo "Already up to date"
+
           git push origin main
