@@ -35,6 +35,7 @@ public static class ServerHost
         // First hosted service: everything after it (loop, gates, HTTP) starts with the game data already parsed.
         if (options.PreloadGameData) builder.Services.AddHostedService<Ro3Emu.Server.Data.GameDataPreload>();
         builder.Services.AddSingleton<Diagnostics.ServerMetrics>();
+        builder.Services.AddSingleton<Diagnostics.SessionCensus>();
         builder.Services.AddSingleton<ILoggerProvider, Diagnostics.MetricsLoggerProvider>();
         // Recent log lines for bug reports (FeedbackService); kept out of the pipeline when reports keep no context.
         builder.Services.AddSingleton<Diagnostics.RecentLogBuffer>();
@@ -112,6 +113,7 @@ public static class ServerHost
         builder.Services.AddSingleton<TradeService>();
         builder.Services.AddSingleton<StallsService>();
         builder.Services.AddSingleton<GuildService>();
+        builder.Services.AddSingleton<GuildVoiceService>();
         builder.Services.AddSingleton<AdventureGroupStore>();
         builder.Services.AddSingleton<AdventureGroupService>();
         builder.Services.AddSingleton<GuildCaravanService>();
@@ -173,6 +175,7 @@ public static class ServerHost
         builder.Services.AddSingleton<Game.Messaging.IMessageModule, ActivitiesMessages>();
         builder.Services.AddSingleton<Game.Messaging.IMessageModule, AdventureGroupMessages>();
         builder.Services.AddSingleton<Game.Messaging.IMessageModule, Voice.VoiceTicketService>();
+        builder.Services.AddSingleton<Game.Messaging.IMessageModule>(sp => sp.GetRequiredService<GuildVoiceService>());
         builder.Services.AddSingleton<GameMessageHandler>();
         builder.Services.AddSingleton(sp => GateCrypto.LoadOrCreate(options.DataDir, sp.GetRequiredService<ILogger<GateCrypto>>()));
         builder.Services.AddSingleton<IMicroService, LoginService>();
@@ -287,9 +290,10 @@ public static class ServerHost
                 return Results.Json(new { code = ok ? 0 : 500, message = ok ? $"{current.Name} deleted" : "not deleted" });
             });
         });
-        // Public status for the launcher's online pill: only a count, never account or character names.
-        app.MapGet("/ro3emu/status", (SessionRegistry sessions) =>
-            Results.Json(new { online = true, players = sessions.All().Count(s => s.Role != null) }));
+        // Public status for the launcher's online pill: only a count, never account or character names. Read from the
+        // loop's census, so anyone polling it adds no work to the loop.
+        app.MapGet("/ro3emu/status", (Diagnostics.SessionCensus census) =>
+            Results.Json(new { online = true, players = census.Current.Roles.Count }));
         // A clean stop for RO3Emu.exe (loopback only): the same shutdown as Ctrl+C, the loop drains and the database closes.
         app.MapPost("/ro3emu/shutdown", (HttpContext context, IHostApplicationLifetime lifetime) =>
         {
@@ -297,11 +301,11 @@ public static class ServerHost
             lifetime.StopApplication();
             return Results.Ok("stopping");
         });
-        // Who is online, for the admin (loopback only).
-        app.MapGet("/ro3emu/online", (HttpContext context, SessionRegistry sessions) =>
+        // Who is online, for the admin (loopback only): read on the loop, where the sessions change.
+        app.MapGet("/ro3emu/online", async (HttpContext context, SessionRegistry sessions, GameLoop loop) =>
         {
             if (context.Connection.RemoteIpAddress is not { } ip || !System.Net.IPAddress.IsLoopback(ip)) return Results.NotFound();
-            return Results.Json(sessions.All().Select(s => new
+            var online = await loop.InvokeAsync(() => Task.FromResult(sessions.All().Select(s => new
             {
                 account = s.Account,
                 role = s.Role?.Name,
@@ -309,7 +313,8 @@ public static class ServerHost
                 x = s.Position.X,
                 z = s.Position.Z,
                 remote = s.Channel.Remote,
-            }));
+            }).ToArray()));
+            return Results.Json(online);
         });
         app.MapFallback((HttpContext context) =>
         {
@@ -369,6 +374,8 @@ public static class ServerHost
         app.Services.GetRequiredService<PersonalService>().Upvoted.Add(questTasks.OnProfileLiked); // 106902
         app.Services.GetRequiredService<GuildCampfireService>().Joined.Add(questTasks.OnCampfireJoined); // 106018
         app.Services.GetRequiredService<GuildService>().MembershipChanged.Add(questTasks.OnStateChanged); // 104007
+        app.Services.GetRequiredService<GuildService>().MembershipChanged.Add(app.Services.GetRequiredService<GuildVoiceService>().OnMembershipChanged);
+        app.Services.GetRequiredService<GuildService>().RightsChanged.Add(app.Services.GetRequiredService<GuildVoiceService>().OnRightsChanged);
         var social = app.Services.GetRequiredService<Micro.SocialOwnerCache>();
         questTasks.LoadFriendCount = async s => s.Role is { } role
             ? (await social.LoadSocialAsync([role.Id])).GetValueOrDefault(role.Id)?.Friends.LongLength : null; // 103019
@@ -484,10 +491,12 @@ internal sealed class GameLoopTickers(IServiceProvider services) : IHostedServic
         Add<TotemEffects>();
         Add<Game.Persistence.PositionPersistence>();
         Add<Game.Persistence.SettingsPersistence>();
+        Add<Diagnostics.SessionCensus>();
         Add<ShopService>(); // 05:00 purchase-limit rollover
         Add<ItemBoxService>(); // award boxes; 05:00 item use-time rollover
         Add<PowerService>(); // throttled 31502/31503 republish of changed power
         Add<Voice.VoiceRooms>(); // VAD silence timeout every tick, team-membership sweep every second
+        Add<GuildVoiceService>(); // guild voice channels: drops the offline and those no longer in the guild, every second
         return Task.CompletedTask;
     }
 
