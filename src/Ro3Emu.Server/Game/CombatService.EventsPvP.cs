@@ -57,7 +57,7 @@ public sealed partial class CombatService
         await StartCastAsync(source, row, request, session);
     }
     private async Task HitEventPlayersAsync(GameSession source, GameSession[] targets, JsonElement row,
-        int skillId, int show, long session, Func<bool> currentSource, Action<long, long>? onHit = null)
+        int skillId, int show, long session, Func<bool> currentSource, Action<long, long>? onHit = null, Vec3? center = null)
     {
         if (FirstNumber(row, "_kDamageParam1") is not > 0 && FirstNumber(row, "_kDamageParam2") is not > 0) return;
         foreach (var target in targets)
@@ -86,7 +86,7 @@ public sealed partial class CombatService
                 var hit = new SkillHitInfo
                 {
                     SrcID = attackerRole.Id, SkillId = skillId, ShowPoint = show, Split = HitSplit(row),
-                    SessionId = session, SrcElement = 1,
+                    SessionId = session, SrcElement = AttackElement(source, row),
                     Dsts = { new DamageInfo { DstID = targetRole.Id, Damage = damage, SheildDamage = shieldDamage, HitResult = result,
                     DstElement = 1, IsDead = hp == 0 } }
                 };
@@ -99,6 +99,9 @@ public sealed partial class CombatService
                 if (!ReferenceEquals(target.Role, targetRole)) continue;
                 if (CurrentPlayerHit(source, target, attackerRole, targetRole, sceneId)) await FightingAsync(source);
                 await FightingAsync(target);
+                // The knockback or pull of a hit that left the target alive, as the same skill moves a monster.
+                if (hp > 0 && currentSource() && CurrentPlayerHit(source, target, attackerRole, targetRole, sceneId))
+                    await DisplacePlayerAsync(source, target, row, skillId, center);
                 if (hp == 0)
                 {
                     if (!ReferenceEquals(target.Role, targetRole)) continue;
@@ -151,7 +154,7 @@ public sealed partial class CombatService
     {
         var attack = _character.Stats(source); var defend = _character.Stats(target);
         var a = new Fighter(attack[AttributeId.Atk], attack[AttributeId.Matk], attack[AttributeId.Hit], attack[AttributeId.Cri],
-            source.Progress!.Level, 1);
+            source.Progress!.Level, AttackElement(source, row));
         var b = new Fighter(0, 0, 0, 0, target.Progress!.Level, 1)
         { Def = defend[AttributeId.Def], Mdef = defend[AttributeId.Mdef], Flee = defend[AttributeId.Flee], ResCri = defend[AttributeId.ResCri] };
         var (damage, result) = Damage(a, b, row, bonusCrit: GuardianPetRules.CriticalChance(row),
