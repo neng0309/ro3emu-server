@@ -260,6 +260,14 @@ public sealed partial class CombatService : IGameTicker
     public List<Func<GameSession, Task>> PlayerRevived { get; } = new();
     /// <summary>A match owner decides which skills a participant may cast (true/false), or defers (null).</summary>
     public Func<GameSession, int, bool?>? MatchSkillRule { get; set; }
+    /// <summary>
+    /// A skill a feature owns outright (the war commander's): null for any other skill, else 0 to cast it or the refusal.
+    /// Such a cast skips the job-tree check and the SkillConfig cooldowns; <see cref="OwnSkillCast"/> runs in their place
+    /// once the cast is accepted, and <see cref="OwnSkillLanded"/> resolves it instead of the generic effects.
+    /// </summary>
+    public Func<GameSession, int, int?>? OwnSkillAdmit { get; set; }
+    public Func<GameSession, int, Task>? OwnSkillCast { get; set; }
+    public Func<GameSession, JsonElement, Task>? OwnSkillLanded { get; set; }
     /// <summary>World-core owns the dead player's explicit accept/decline invitation.</summary>
     public Func<GameSession, GameSession, JsonElement, Task>? ReviveOffer { get; set; }
     public Func<GameSession, int>? ReviveCheck { get; set; }
@@ -302,6 +310,7 @@ public sealed partial class CombatService : IGameTicker
         buffs.UnitChanged.Add(PublishTowerPetStatsAsync);
         WireBuffRules();
         WireBossSkills();
+        WireCompanions();
     }
 
     private static long Now => MonsterService.NowMs;
@@ -314,13 +323,24 @@ public sealed partial class CombatService : IGameTicker
         _log.LogDebug("{Name} locks {Target}", s.Role?.Name, req.EnemyId);
     }
 
-    /// <summary>The template's damage EffectData (hit fx + flinch): the first with m_kDamage in [show*100, show*100+99].</summary>
+    /// <summary>
+    /// The template's hit EffectData (hit fx, flinch, hit sound) for SkillHitInfo.showPoint: the first in
+    /// [show*100, show*100+99] whose m_kDamage has m_kActionDamge, else the first with any m_kDamage.
+    /// LC_DamageHelper.CalcDamageHitPoint reads only m_kActionDamge from the show point, so a bullet entry there (Fire
+    /// Bolt 1200411, Lightning Bolt 1200503, Double Strafe 1300304) showed no hit; the bullet goes in 31120 instead
+    /// (<see cref="BulletEffect"/>).
+    /// </summary>
     private int HitEffect(long scriptShow)
     {
         var effects = _data.SkillTemplateTable("Lua_Config_EffectData");
+        int first = 0;
         for (long id = scriptShow * 100; id < scriptShow * 100 + 100; id++)
-            if (effects.TryGetValue(id.ToString(), out var e) && e.TryGetProperty("m_kDamage", out _)) return (int)id;
-        return 1000002;
+        {
+            if (SkillEffectData.Find(effects, id) is not { HasDamage: true } effect) continue;
+            if (effect.HasHitReaction) return (int)id;
+            if (first == 0) first = (int)id;
+        }
+        return first != 0 ? first : 1000002;
     }
 
     /// <summary>
