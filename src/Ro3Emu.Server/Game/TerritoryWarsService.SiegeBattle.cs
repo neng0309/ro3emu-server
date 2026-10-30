@@ -51,6 +51,8 @@ public sealed partial class TerritoryWarsService
         public MonsterUnit? Crystal { get; set; }
         internal CommandBoard Command { get; } = new();
         public bool Spawning { get; set; }
+        /// <summary>For assists: each victim's recent hitters and when (TerritoryWarsService.QuestTargets.cs).</summary>
+        internal Dictionary<long, Dictionary<long, long>> Hits { get; } = [];
     }
 
     private static string SiegeKey(int city, long start) => $"{start}:{city}";
@@ -161,6 +163,7 @@ public sealed partial class TerritoryWarsService
         var p = battle.State.Players[s.Role!.Id];
         p.Loaded = true; await SaveAsync(state);
         await Send(s, 30401, SiegeBaseInfo(battle));
+        SiegeTrack(battle, [p.Id]);
         await SendCommandBoardAsync(s);
         // DungeonLua_2230101: point 73 defender, point 75 attacker.
         int born = p.Guild == battle.State.Defense ? 73 : 75;
@@ -206,7 +209,21 @@ public sealed partial class TerritoryWarsService
         && SiegeMember(b, battle) && OwnId(a) != OwnId(b);
 
     private bool SiegeCanHit(GameSession s, MonsterUnit m, SiegeRun battle)
-        => m != battle.Crystal || SiegeActive(battle) && SiegeMember(s, battle) && OwnId(s) == battle.State.Attack;
+        => MachineCamp(m) is { } camp ? MachineHittable(s, battle, camp)
+            : m != battle.Crystal || SiegeActive(battle) && SiegeMember(s, battle) && OwnId(s) == battle.State.Attack;
+
+    /// <summary>
+    /// CombatService.SkillLineBlocked: (inferred) inside a siege room the castle stops skills along the navigation grid,
+    /// standing in for the siege's air walls (sc_gvg_gongchengzhan_001 m_kAirWalls, gridLevel 1-5), which the original
+    /// switches on through dungeon variable 133 CAirWallList from scripts the client does not have. Elsewhere nothing
+    /// stops a skill, as in the client.
+    /// </summary>
+    private bool SiegeSkillLineBlocked(GameSession s, MonsterUnit? m, Vec3 origin, Vec3 target)
+    {
+        if (s.SiegeBattle is null || s.SceneEntry != SiegeScene || _maps.Map(SiegeScene)?.Nav is not { } nav
+            || nav.CanWalk(origin.X, origin.Y, origin.Z, target.X, target.Z)) return false;
+        return m == null || !SiegeCrystalBlockedEndpointAllowed(s, m, origin, target);
+    }
 
     /// <summary>The configured crystal sits in a blocked navigation footprint at point 44. Preserve
     /// straight-line path checks up to its target cell, and allow only that terminal cell to be blocked
@@ -276,8 +293,15 @@ public sealed partial class TerritoryWarsService
             var battle = s.SiegeBattle!;
             var attacker = battle.State.Players[s.Role!.Id]; var defender = battle.State.Players[victim.Role!.Id];
             attacker.Damage += Math.Max(0, amount); defender.Taken += Math.Max(0, amount);
-            if (lethal) { attacker.Kills++; attacker.Score++; } // (inferred) one point per player kill.
+            long[] helpers = [];
+            if (lethal)
+            {
+                attacker.Kills++; attacker.Score++; // (inferred) one point per player kill.
+                helpers = SiegeAssists(battle, attacker.Id, defender.Id, MonsterService.NowMs);
+            }
+            else if (amount > 0) SiegeHit(battle, attacker.Id, defender.Id, MonsterService.NowMs);
             await SaveAsync(state);
+            if (lethal) SiegeTrack(battle, helpers.Append(attacker.Id));
         }
         finally { stagedTerritoryState.Dispose(); _gate.Release(); reservation?.Dispose(); }
     }
@@ -474,7 +498,7 @@ public sealed partial class TerritoryWarsService
             role.ExtraData[1001002] = new ExtraValueData { LongValue = p.Taken }; // TakeDamage
             role.ExtraData[1001003] = new ExtraValueData { LongValue = p.Healed }; // heal
             role.ExtraData[1001004] = new ExtraValueData { LongValue = p.Kills }; // KillPlayer
-            role.ExtraData[1001005] = new ExtraValueData(); // AssistKill
+            role.ExtraData[1001005] = new ExtraValueData { LongValue = p.Assists }; // AssistKill
             role.ExtraData[1021001] = new ExtraValueData(); // AttackCityValue (no supported formula)
             role.ExtraData[1021002] = new ExtraValueData(); // DestroyMachinery (not implemented)
             role.ExtraData[1021003] = new ExtraValueData(); // MachineryDamage (not implemented)
