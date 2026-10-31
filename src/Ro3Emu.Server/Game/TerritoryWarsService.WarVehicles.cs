@@ -6,9 +6,9 @@ using Ro3Emu.Server.Maps;
 namespace Ro3Emu.Server.Game;
 
 /// <summary>
-/// The war vehicles of a siege (docs/systems/territory-wars.md "War vehicles"). A vehicle is an NPC of NPCConfig
-/// _iNPCSubType 103 (enum_NpcSubType.Vehicle), so the client gives it LC_VehicleComponent with the seats of its VehicleConfig
-/// (_iSubTypeValue -> _kSeats, VehicleSeatConfig rows by 0-based index, LC_VehicleComponent.GetSeatConfig). Seats are
+/// The war vehicles of a siege or a type-18 territory battle (docs/systems/territory-wars.md "War vehicles"). A vehicle is
+/// an NPC of NPCConfig _iNPCSubType 103 (enum_NpcSubType.Vehicle), so the client gives it LC_VehicleComponent with the
+/// seats of its VehicleConfig (_iSubTypeValue -> _kSeats, VehicleSeatConfig rows by 0-based index, LC_VehicleComponent.GetSeatConfig). Seats are
 /// taken through the NPC's interactions (4900022..24: NPCInteractConfig _iStatusID 3, GameplayStatusConfig type 3, seat
 /// _iStatusLocation) and left through the seat's _iExitNpcAction (4900025, the QuitStatus of LC_VehicleServer). Who sits
 /// where travels as AOI carry info (LC_VehicleHelper.ProcessVehicle): the passenger's be_carried {vehicle id, slot,
@@ -29,13 +29,14 @@ public sealed partial class TerritoryWarsService
 
     private sealed record Rider(VehicleUnit Unit, int Seat, long Interaction);
 
-    /// <summary>A war vehicle: its owner (the member who used the item), camp, seats and the gunners' aim. A monster unit
-    /// for the combat, as a cannon.</summary>
+    /// <summary>A war vehicle: its owner (the member who used the item), camp, guild, seats and the gunners' aim. A
+    /// monster unit for the combat, as a cannon.</summary>
     internal sealed class VehicleUnit : MonsterUnit
     {
         public required int NpcId { get; init; }
         public required long Owner { get; init; }
         public required long Camp { get; init; }
+        public required long Guild { get; init; }
         public required string Name { get; init; }
         /// <summary>VehicleSeatConfig rows of the seats, in VehicleConfig _kSeats order.</summary>
         public required long[] SeatRows { get; init; }
@@ -83,6 +84,7 @@ public sealed partial class TerritoryWarsService
                 if (Seats[seat] != null) carries.AllCarries.Add(Carry(seat));
             if (carries.AllCarries.Count > 0) entity.CarryInfo = carries;
             if (FireDirs.Count > 0) entity.VehicleDetail = Detail();
+            AddMachineGuild(entity, Guild);
             return entity;
         }
     }
@@ -93,24 +95,36 @@ public sealed partial class TerritoryWarsService
     /// </summary>
     private async Task<long> RaiseVehicleAsync(GameSession owner, int npcId)
     {
-        if (owner.SiegeBattle is not { } battle || owner.Role is not { } role
-            || NPCConfig.Get(_data, npcId) is not { NPCSubType: 103 } npc
-            || VehicleConfig.Get(_data, npc.SubTypeValue) is not { Seats: { Length: > 0 } seats }
-            || _monsters.MachineTemplate(npcId) is not { } template) return 0;
+        if (WarRoomOf(owner) is not { } battle || owner.Role is not { } role) return 0;
         foreach (var (uid, old) in _vehicles)
             if (old.Unit.Removed || old.Room.Closed) _vehicles.TryRemove(uid, out _);
         float rad = owner.Face * MathF.PI / 180f;
         var spot = new MapPoint(owner.Position.X + 2 * MathF.Sin(rad), owner.Position.Y, owner.Position.Z + 2 * MathF.Cos(rad), owner.Face);
         if (_maps.Map(owner.SceneEntry) is { } map) spot = map.Grounded(spot);
+        if (NewVehicle(npcId, battle.Room, spot, role.Id, CampOf(owner), battle.Guild) is not { } unit
+            || !await _instances.AddPropAsync(battle.Room, unit)) return 0;
+        _vehicles[unit.Uid] = (unit, battle.Room);
+        return unit.Uid;
+    }
+
+    /// <summary>A vehicle NPC of <paramref name="room"/> at <paramref name="spot"/>, of its owner (0: none), camp and guild,
+    /// with NPCConfig _kBornEventBuff standing on it; null for an NPC that is no vehicle with seats.</summary>
+    private VehicleUnit? NewVehicle(int npcId, InstanceService.Room room, MapPoint spot, long owner, long camp, long guild)
+    {
+        if (NPCConfig.Get(_data, npcId) is not { NPCSubType: 103 } npc
+            || VehicleConfig.Get(_data, npc.SubTypeValue) is not { Seats: { Length: > 0 } seats }
+            || _monsters.MachineTemplate(npcId) is not { } template) return null;
         var (group, home) = MachineHome(npcId, spot);
         var unit = new VehicleUnit
         {
-            Uid = VehicleUidBase | Interlocked.Increment(ref _vehicleSerial), SceneEntry = owner.SceneEntry, InstanceId = battle.Room.Id,
-            X = spot.X, Y = spot.Y, Z = spot.Z, Face = owner.Face, NpcId = npcId, Owner = role.Id, Camp = CampOf(owner),
-            CampOverride = (int)CampOf(owner), Name = npc.Name is [var nameId, ..] ? _data.Text(nameId) : "",
+            Uid = VehicleUidBase | Interlocked.Increment(ref _vehicleSerial), SceneEntry = room.SceneEntry, InstanceId = room.Id,
+            X = spot.X, Y = spot.Y, Z = spot.Z, Face = spot.Face, NpcId = npcId, Owner = owner, Camp = camp, Guild = guild,
+            CampOverride = (int)camp, Name = npc.Name is [var nameId, ..] ? _data.Text(nameId) : "",
             Template = template, Group = group, Home = home, Hp = template.MaxHp, BornTimeMs = MonsterService.NowMs,
             SeatRows = seats, Seats = new GameSession?[seats.Length],
             SeatTypes = [.. seats.Select(seat => VehicleSeatConfig.Get(_data, seat)?.Type ?? 0)],
+            // As a cannon: damage stays until the repair zone mends it, and a hit does not lock or leash it.
+            KeepsDamage = true, StaysOutOfBattle = true,
         };
         foreach (long[] entry in npc.BornEventBuff)
             if (entry is [var buff, ..] && buff > 0 && _data.Row("BuffConfig", buff) != null)
@@ -118,9 +132,7 @@ public sealed partial class TerritoryWarsService
                 {
                     BuffGuid = Interlocked.Increment(ref _vehicleBuffGuid), ConfigId = (int)buff, PileCount = 1, SourceId = unit.Uid,
                 });
-        if (!await _instances.AddPropAsync(battle.Room, unit)) return 0;
-        _vehicles[unit.Uid] = (unit, battle.Room);
-        return unit.Uid;
+        return unit;
     }
 
     private bool VehicleStanding(long uid) => _vehicles.TryGetValue(uid, out var v) && !v.Unit.Removed && !v.Room.Closed;
@@ -140,7 +152,7 @@ public sealed partial class TerritoryWarsService
         if (id == SceneService.NpcInteraction)
         {
             var req = NpcInteractionReq.Parser.ParseFrom(body.Span);
-            if (!_vehicles.TryGetValue(req.NpcUid, out var vehicle)) return false;
+            if (!_vehicles.TryGetValue(req.NpcUid, out var vehicle)) return await RingInteractAsync(s, req);
             int code = await VehicleInteractAsync(s, vehicle.Unit, vehicle.Room, req);
             if (code != 0) await Send(s, id, new NpcInteractionRsp { Result = code, Req = req });
             return true;
@@ -180,15 +192,15 @@ public sealed partial class TerritoryWarsService
     }
 
     /// <summary>
-    /// The seat interaction of a living vehicle of the player's siege, within NPCConfig _iInteractDistance: its
+    /// The seat interaction of a living vehicle of the player's battle, within NPCConfig _iInteractDistance: its
     /// GameplayStatusConfig is a vehicle state, its seat (_iStatusLocation, 1-based) is free and both its conditions
     /// hold (the interaction's: the seat taken by nobody and the Vehicle permission; the NPC's: an empty seat of that type
-    /// on a vehicle of the player's camp). Not while operating a cannon.
+    /// on a vehicle of the player's side). Not while operating a cannon.
     /// </summary>
     private int CanBoard(GameSession s, VehicleUnit unit, InstanceService.Room room, NpcInteractionReq req, out int seat)
     {
         seat = -1;
-        if (s.Role == null || s.Dead || s.SceneLoading || s.SiegeBattle?.Room != room || unit.Removed || room.Closed)
+        if (s.Role == null || s.Dead || s.SceneLoading || WarRoomOf(s)?.Room != room || unit.Removed || room.Closed)
             return ErrorCodes.NpcMissing;
         if (NPCConfig.Get(_data, unit.NpcId) is not { } npc || !npc.InteractId.Contains(req.InteractionId)
             || NPCInteractConfig.Get(_data, req.InteractionId) is not { } interaction
@@ -197,7 +209,8 @@ public sealed partial class TerritoryWarsService
         if (MonsterService.Distance(s.Position.X, s.Position.Z, unit.X, unit.Z) > Math.Max(npc.InteractDistance, 3) + 1)
             return ErrorCodes.NpcTooFar;
         seat = (int)interaction.StatusLocation - 1;
-        if (seat < 0 || seat >= unit.Seats.Length || unit.Seats[seat] != null || _operators.ContainsKey(s)) return ErrorCodes.NpcParameter;
+        if (seat < 0 || seat >= unit.Seats.Length || unit.Seats[seat] != null || _operators.ContainsKey(s)
+            || _activators.ContainsKey(s)) return ErrorCodes.NpcParameter;
         int index = seat;
         return VehicleCondition(s, unit, interaction.Condition, index) && VehicleCondition(s, unit, interaction.NPCCondition, index)
             ? 0 : ErrorCodes.NpcParameter;
@@ -216,18 +229,19 @@ public sealed partial class TerritoryWarsService
     /// LC_InteractCondition.CheckVehicleHasEmptySeat (12002: a living vehicle that is not an enemy, a seat of that
     /// enum_PassengerType free), CheckTakeOnVehicleSeat (12003: the player sits nowhere yet), CheckGVGPermission (2202:
     /// SiegePermissionSelfData eToolType) and LC_CommonCondition.CheckCamp (2200: the same EntityCamp, its argument unused);
-    /// 12001 the vehicle state (7000030). Any other type is closed.
+    /// 12001 the vehicle state (7000030). Any other type is closed. (inferred) In a territory battle, where every camp is 1,
+    /// "not an enemy" and "the same camp" are the same guild, as the client's relation there.
     /// </summary>
     private bool VehicleSubCondition(GameSession s, VehicleUnit unit, LCConditionList sub, int seat)
     {
         if (sub.Data is not [var type, var arg, ..]) return false;
         bool? yes = type switch
         {
-            VehicleHasEmptySeat => unit.Camp == CampOf(s)
+            VehicleHasEmptySeat => OwnSide(s, unit.Camp, unit.Guild)
                 && Enumerable.Range(0, unit.Seats.Length).Any(i => unit.SeatTypes[i] == arg && unit.Seats[i] == null),
             TakeOnVehicleSeat => !_riders.ContainsKey(s),
             GvgPermission => (long)_guilds.ToolOfRole(s) == arg,
-            CheckCamp => unit.Camp == CampOf(s),
+            CheckCamp => OwnSide(s, unit.Camp, unit.Guild),
             InStatus => arg == VehicleStatusType && _riders.ContainsKey(s),
             _ => null,
         };

@@ -16,7 +16,7 @@ The full guide behind the README's three steps.
 file against Genesis' signature: it offers this when it finds no game folder, or run `RO3Emu.exe install`.
 If it cannot reach the servers, your internet provider may block Genesis' mirror: connect through Cloudflare WARP
 (or another VPN) and try again, or install the game with the Genesis launcher and choose "I have the game" (issue #104).
-RO3Emu never hosts game files. Tested with the Genesis client releases of 7, 16, 21, 23, 25 and 29 October 2026 (2026.10.29.1,
+RO3Emu never hosts game files. Tested with the Genesis client releases of 7, 16, 21, 23, 25, 29 and 30 October 2026 (2026.10.30.1,
 the current one); the 20 October release passes `RO3Emu.exe check` and the data export.
 
 | Command | What it does |
@@ -28,6 +28,10 @@ the current one); the 20 October release passes `RO3Emu.exe check` and the data 
 | `RO3Emu.exe restore` | undo the patch: the game talks to Genesis' servers again |
 | `RO3Emu.exe check` | does this game version fit this RO3Emu? (changes nothing) |
 | `RO3Emu.exe diag` | makes `RO3Emu-diagnostics.zip` for a bug report |
+
+Your server also serves a [web panel](panel.md) on `http://127.0.0.1:5381` (your account, characters, rankings, and
+an admin area for GM accounts). `--panel-port <n>` moves it, `--no-panel` turns it off; two servers on one PC need
+different ports for it too (`--http-port`, `--micro-port`, `--game-port`, `--panel-port`).
 
 **What it changes.** In the game folder: a few DLLs in `ro3_Data\Managed` (the originals are kept in `ro3emu-backup`)
 and `ro3emu\loc_en.tsv` (English texts, built from your own game files). Next to RO3Emu.exe: `data\` (game data and
