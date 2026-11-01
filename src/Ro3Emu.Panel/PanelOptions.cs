@@ -14,6 +14,13 @@ public sealed class PanelOptions
     public string? BindAddress { get; set; }
 
     /// <summary>
+    /// The panel's public address when players reach it some other way than the server's host and panel port, such as
+    /// behind a reverse proxy (https://example.com:8443). The server announces it on GET /ro3emu/panel of its HTTP port,
+    /// so a launcher that joined finds it. Empty: launchers look on the host's panel port.
+    /// </summary>
+    public string? PublicUrl { get; set; }
+
+    /// <summary>
     /// Addresses of reverse proxies whose X-Forwarded-For and X-Forwarded-Proto are believed: the client address for
     /// the login budget and https for the cookie's Secure flag. Empty: both headers are ignored, whoever sends them.
     /// </summary>
@@ -25,6 +32,16 @@ public sealed class PanelOptions
 
     /// <summary>Accounts can be created on the panel's sign-up page. Off: only the game's first login creates them.</summary>
     public bool Registration { get; set; } = true;
+
+    /// <summary>
+    /// Accounts the sign-up creates for one client address (an IPv6 one by its /64 network) in any 24 hours; 0: no
+    /// limit. The address is the connection's peer, or behind a proxy of <see cref="TrustedProxies"/> the one it forwards,
+    /// so a reverse proxy must be listed there or every visitor shares its address.
+    /// </summary>
+    public int SignUpsPerAddressPerDay { get; set; }
+
+    /// <summary>Accounts the sign-up creates in any hour, from every address together; 0: no limit.</summary>
+    public int SignUpsPerHour { get; set; }
 
     /// <summary>
     /// The folder of the pictures the pages show (item, monster, class and map images), decoded from the operator's own

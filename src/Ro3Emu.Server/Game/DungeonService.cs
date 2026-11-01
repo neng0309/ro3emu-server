@@ -16,10 +16,6 @@ namespace Ro3Emu.Server.Game;
 /// </summary>
 public sealed partial class DungeonService
 {
-    private const long EggThiefDungeon = 1021301;
-    private const int EggThiefWaveSpeedCm = 550;
-    private const float EggThiefWaveLeash = 100f;
-
     public const uint Sync = 5062, Enter = 30400, BaseInfo = 30401, Leave = 30402, Result = 30403, Event = 30404,
         Confirm = 30406, ClientEvent = 30106, CreateResult = 30107, EnterSceneResult = 30108,
         Reset = 30124, ReadyQueue = 42033, TeamInfo = 30441, ConfirmReminder = 42047, ConfirmReminderNotify = 42046,
@@ -97,6 +93,7 @@ public sealed partial class DungeonService
         this._world = world;
         this._vehicles = vehicles;
         gm.Register("actors", "[npcId | walk <x> <z> | use] (scripted scene test aid: the step's scene actors, jump beside one, arrive at x z as a walk would, or complete the step server-side)", ActorsGmAsync);
+        WireRaidTrials(combat, gm);
         teams.MultiDungeonInfo = TeamDungeonInfo;
         combat.DamageAdjusters.Add((s, m, _, _, damage) => BondDamage(s, m, damage, incoming: false));
         combat.IncomingDamageAdjusters.Add((m, s, _, damage) => Task.FromResult(BondDamage(s, m, damage, incoming: true)));
@@ -181,6 +178,8 @@ public sealed partial class DungeonService
         /// <summary>The companions (NPC, point) that fell in this run: they do not come back.</summary>
         internal HashSet<(int NpcId, long Point)> FallenCompanions { get; } = [];
         internal GuildChallengeService.Run? GuildChallenge { get; set; }
+        /// <summary>A raid boss's scripted trials in this run (DungeonService.RaidTrials); null: none.</summary>
+        internal RaidRun? Raid { get; set; }
         /// <summary>Dracula's Lair: DraculaWeddingService owns admission, the bride, the key and the settlement.</summary>
         internal DraculaWeddingService.Run? Dracula { get; set; }
     }
@@ -585,6 +584,7 @@ public sealed partial class DungeonService
         a.StartedAt = _loop.Now; a.StartMs = MonsterService.NowMs;
         await BroadcastAsync(a, BaseInfo, Snapshot(a));
         await SpawnWaveAsync(a);
+        StartRaidTrials(a);
         _loop.ScheduleLegacy(TimeSpan.FromMilliseconds(a.Plan.DurationMs), () => a.Settled || a.Room.Closed ? Task.CompletedTask : SettleAsync(a, false));
     }
 
@@ -620,20 +620,7 @@ public sealed partial class DungeonService
         foreach (var spawn in a.Plan.Waves[a.Wave].Spawns)
         {
             if (a.Settled || a.Room.Closed) { a.Spawning = false; return; }
-            MonsterTemplate? waveTemplate = null;
-            if (a.Plan.SceneEntry == EggThiefDungeon && _monsters.Template(spawn.NpcId) is { } template)
-            {
-                // (inferred) The missing original encounter script sent these three portal waves toward the player. The
-                // reconstructed first-wave Pupa is immobile and all three authored portals lie outside its normal
-                // 20 m home leash, so ordinary field AI leaves two actors off-camera forever. Use the 550 cm/s pace
-                // already carried by this encounter's Boa/Willow waves and a room-sized leash for this scene only.
-                waveTemplate = template with
-                {
-                    SpeedCm = Math.Max(template.SpeedCm, EggThiefWaveSpeedCm),
-                    LeashDistance = Math.Max(template.LeashDistance, EggThiefWaveLeash),
-                };
-            }
-            var monster = await _instances.SpawnAsync(a.Room, spawn.NpcId, spawn.Point, customTemplate: waveTemplate);
+            var monster = await _instances.SpawnAsync(a.Room, spawn.NpcId, spawn.Point);
             if (a.Settled || a.Room.Closed)
             {
                 a.Spawning = false;
@@ -996,6 +983,7 @@ public sealed partial class DungeonService
                     await s.SendGameAsync(Result, result);
                     if (success) await HideGuideWaysAsync(s, a);
                     if (success && LeavesAfterClear(a)) ScheduleLeaveAfterClear(s, a);
+                    else if (success && ContinuationOf(a.Plan.SceneEntry) is long nextScene and not 0) ScheduleContinuation(s, a, nextScene);
                     if (success && a.Plan.Multi != null)
                     {
                         var award = new SyncMultiDungeonAwardNotify

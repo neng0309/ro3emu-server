@@ -45,6 +45,10 @@ public interface IPanelOperations
     /// <summary>New recovery codes replacing the old ones; null when 2FA is off.</summary>
     Task<IReadOnlyList<string>?> NewRecoveryCodesAsync(string account);
 
+    /// <summary>Records that <paramref name="admin"/> signed <paramref name="account"/> out of every panel browser
+    /// (the sessions live in the panel; the server only keeps the audit row).</summary>
+    Task RecordPanelLogoutAsync(string admin, string account, int ended);
+
     // ---------------------------------------------------------------- reports
 
     /// <summary>In-game reports (FeedbackService), newest first, with their triage; <paramref name="status"/> empty = all.</summary>
@@ -149,7 +153,9 @@ public sealed record PanelDeletedCharacter(long Id, string Name, string Class, i
 /// <param name="Backup">The backup file a restore puts back.</param>
 public sealed record PanelSchedule(string Kind, int Minutes, string Reason, string? Backup = null);
 
-public sealed record PanelScheduled(string Kind, DateTimeOffset At, string Reason, string By, string? Backup);
+/// <param name="Kind">restart, shutdown, restore, or update and rollback (planned by <see cref="IPanelUpdates"/>).</param>
+/// <param name="Version">The version an update or rollback starts.</param>
+public sealed record PanelScheduled(string Kind, DateTimeOffset At, string Reason, string By, string? Backup, string? Version = null);
 
 public sealed record PanelMaintenance(bool On, string Note, string? By, DateTimeOffset? Since);
 

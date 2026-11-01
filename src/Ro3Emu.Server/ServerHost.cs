@@ -83,6 +83,7 @@ public static partial class ServerHost
         builder.Services.AddSingleton<TimedBattleService>();
         builder.Services.AddSingleton<DungeonMatchService>();
         builder.Services.AddSingleton<FestivalService>();
+        builder.Services.AddSingleton<RankRewardService>();
         builder.Services.AddSingleton<TrainingService>();
         builder.Services.AddSingleton<LotteryService>();
         builder.Services.AddSingleton<GuildHomeService>();
@@ -128,6 +129,7 @@ public static partial class ServerHost
         builder.Services.AddSingleton<StallsService>();
         builder.Services.AddSingleton<GuildService>();
         builder.Services.AddSingleton<GuildVoiceService>();
+        builder.Services.AddSingleton<TavernService>();
         builder.Services.AddSingleton<AdventureGroupStore>();
         builder.Services.AddSingleton<AdventureGroupService>();
         builder.Services.AddSingleton<GuildCaravanService>();
@@ -168,6 +170,7 @@ public static partial class ServerHost
         builder.Services.AddSingleton<WorldInteractionService>();
         builder.Services.AddSingleton<FriendExtraService>();
         builder.Services.AddSingleton<ChatService>();
+        builder.Services.AddSingleton<ChatFloodGuard>();
         builder.Services.AddSingleton<FeedbackService>();
         builder.Services.AddSingleton<GmCommands>();
         builder.Services.AddSingleton<Ro3Emu.Server.Data.GameData>();
@@ -181,6 +184,8 @@ public static partial class ServerHost
         // A singleton too: the panel's server control lists backups and makes one on demand.
         builder.Services.AddSingleton<DatabaseBackup>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<DatabaseBackup>());
+        builder.Services.AddSingleton<CheatMonitor>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<CheatMonitor>());
         builder.Services.AddSingleton<ReceiptRetention>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<ReceiptRetention>());
         builder.Services.AddSingleton<Game.Persistence.PositionPersistence>();
@@ -197,6 +202,7 @@ public static partial class ServerHost
         builder.Services.AddSingleton<Game.Messaging.IMessageModule, AdventureGroupMessages>();
         builder.Services.AddSingleton<Game.Messaging.IMessageModule, Voice.VoiceTicketService>();
         builder.Services.AddSingleton<Game.Messaging.IMessageModule>(sp => sp.GetRequiredService<GuildVoiceService>());
+        builder.Services.AddSingleton<Game.Messaging.IMessageModule>(sp => sp.GetRequiredService<TavernService>());
         builder.Services.AddSingleton<GameMessageHandler>();
         builder.Services.AddSingleton(sp => GateCrypto.LoadOrCreate(options.DataDir, sp.GetRequiredService<ILogger<GateCrypto>>()));
         builder.Services.AddSingleton<IMicroService, LoginService>();
@@ -231,6 +237,9 @@ public static partial class ServerHost
         builder.Services.AddSingleton<MaintenanceMode>();
         builder.Services.AddSingleton<PanelOperations>();
         builder.Services.AddSingleton<Ro3Emu.Panel.IPanelOperations>(sp => sp.GetRequiredService<PanelOperations>());
+        builder.Services.AddSingleton<Updates.UpdateManager>();
+        builder.Services.AddSingleton<Ro3Emu.Panel.IPanelUpdates>(sp => sp.GetRequiredService<Updates.UpdateManager>());
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<Updates.UpdateManager>());
         builder.Services.AddSingleton<Ro3Emu.Panel.PanelSite>();
         builder.Services.AddSingleton<GiftCodeLimiter>();
         builder.Services.AddSingleton<GiftCodeService>();
@@ -246,6 +255,9 @@ public static partial class ServerHost
         if (options.Panel.Enabled) Ro3Emu.Panel.PanelSite.Map(app, options.Panel.Port);
         // Mount energy meters (EnergyConfig._iBelongMount): BuffService cannot take MountService (MountService -> SceneService -> BuffService).
         app.Services.GetRequiredService<MountService>().Changed.Add(app.Services.GetRequiredService<BuffService>().MountsChangedAsync);
+        app.Services.GetRequiredService<CharacterService>().ExpCredited.Add(app.Services.GetRequiredService<CheatMonitor>().ExpGained);
+        // Team chat channels (ChatService cannot take TeamService: TeamService -> ChatService).
+        app.Services.GetRequiredService<ChatService>().TeamChannelAllowed = app.Services.GetRequiredService<TeamService>().ChannelAllowed;
         app.Use(async (context, next) =>
         {
             if (HttpMethods.IsPost(context.Request.Method) && app.Services.GetRequiredService<GameLoop>().Phase != GameLoopPhase.Accepting)
@@ -275,6 +287,12 @@ public static partial class ServerHost
                 return Results.Ok("done");
             });
         });
+        // The web panel's public address for launchers that joined (Ro3Emu:Panel:PublicUrl); 404 without one.
+        app.MapGet("/ro3emu/panel", (Microsoft.Extensions.Options.IOptions<ServerOptions> options) =>
+            options.Value.Panel is { Enabled: true, PublicUrl: { Length: > 0 } url } && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+                && uri.Scheme is "http" or "https"
+                ? Results.Json(new { url = uri.ToString().TrimEnd('/') })
+                : Results.NotFound());
         // In-game bug reports (loopback only, docs/guide/feedback.md): GET /ro3emu/reports?since=<id or ISO time>&limit=&format=text
         app.MapGet("/ro3emu/reports", (HttpContext context, FeedbackService feedback) =>
         {
@@ -408,6 +426,11 @@ public static partial class ServerHost
         league.MatchCommitted.Add(questTasks.OnGuildLeagueMatch); // 106603, 106019
         territory.SiegeSettled.Add(questTasks.OnSiegeSettled); // 106611, 106605, 106606
         questTasks.BattleMeritPoints = territory.GloryPoints; // 106610
+        questTasks.FactionCamp = territory.WorldCampOf; // the Faction Quest (TaskService.FactionQuest.cs)
+        questTasks.FactionRivals = territory.WorldRivals; // 101023
+        territory.CampChanged.Add(questTasks.OnFactionCampChanged);
+        territory.CrystalCollected.Add(questTasks.OnFactionCrystalCollected); // 107102
+        questTasks.FactionGuildAward = app.Services.GetRequiredService<GuildCaravanService>().PayFactionAward;
         territory.SiegeSettled.Add((role, _, _) => questTasks.OnGuildEventJoined(role, TaskService.GuildEvent.RoyalCity)); // 106010
         territory.BattleSettled.Add(questTasks.OnTerritoryBattleSettled); // 106010 Stronghold / Regional Capital War
         territory.BattleSettled.Add((role, _) => questTasks.OnGuildWarScored(role)); // 106609
@@ -419,6 +442,7 @@ public static partial class ServerHost
         escort.CartStarted.Add(s => questTasks.OnGuildEventJoined(s, TaskService.GuildEvent.Escort)); // 106010 Escort
         app.Services.GetRequiredService<EmblemService>().Upgraded.Add(questTasks.OnEchoUpgraded); // 317002
         app.Services.GetRequiredService<TowerService>().Settled.Add(questTasks.OnTowerSettled); // 101007, 101010
+        app.Services.GetRequiredService<TrainingService>().ChallengeSettled.Add(questTasks.OnDummyChallengeSettled); // 210006
         app.Services.GetRequiredService<PersonalService>().Upvoted.Add(questTasks.OnProfileLiked); // 106902
         app.Services.GetRequiredService<GuildCampfireService>().Joined.Add(questTasks.OnCampfireJoined); // 106018
         app.Services.GetRequiredService<GuildService>().MembershipChanged.Add(questTasks.OnStateChanged); // 104007
@@ -431,6 +455,12 @@ public static partial class ServerHost
         app.Services.GetRequiredService<MountService>().RideChanged.Add(s => { questTasks.OnStateChanged(s); return Task.CompletedTask; }); // 101021
         app.Services.GetRequiredService<GuildService>().MembershipChanged.Add(app.Services.GetRequiredService<GuildVoiceService>().OnMembershipChanged);
         app.Services.GetRequiredService<GuildService>().RightsChanged.Add(app.Services.GetRequiredService<GuildVoiceService>().OnRightsChanged);
+        // The Tavern's achievements: 106007 counts the daily quest's deliveries, 106008 reads the Star Power.
+        var achievements = app.Services.GetRequiredService<AchievementService>();
+        var tavern = app.Services.GetRequiredService<TavernService>();
+        questTasks.QuestDelivered.Add((s, task, _) => achievements.OnTaskCompletions(s, task, 1));
+        tavern.TavernQuestsAdded.Add((s, count) => achievements.OnTaskCompletions(s, tavern.TaskId(), count));
+        tavern.PopularityChanged.Add(achievements.OnStateChanged);
         var social = app.Services.GetRequiredService<Micro.SocialOwnerCache>();
         questTasks.LoadFriendCount = async s => s.Role is { } role
             ? (await social.LoadSocialAsync([role.Id])).GetValueOrDefault(role.Id)?.Friends.LongLength : null; // 103019
@@ -460,6 +490,7 @@ public static partial class ServerHost
         app.Logger.LogInformation("Data dir {DataDir}", options.DataDir);
         LogGmPolicy(app.Logger, options, builder.Environment.EnvironmentName);
         LogTesting(app.Logger, options.Testing);
+        if (options.RefuseUnknownAccounts && !(options.Panel.Enabled && options.Panel.Registration)) LogNoSignUp(app.Logger);
         // D1 inventory across many short-lived servers (a whole test suite): each appends its loop waits on stop.
         if (Environment.GetEnvironmentVariable("RO3EMU_LOOPWAIT_DUMP") is { Length: > 0 } dump)
             app.Lifetime.ApplicationStopped.Register(() => Diagnostics.LoopWaitDump.Append(dump, app.Services.GetRequiredService<AccountStore>().AccessMetrics));
@@ -544,6 +575,10 @@ public static partial class ServerHost
         "(docs/guide/hosting.md).")]
     private static partial void LogUnlimitedRewards(ILogger logger);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "!!! Ro3Emu:RefuseUnknownAccounts is on but the web panel's sign-up is " +
+        "off: no new account can be created. Turn on Ro3Emu:Panel:Enabled and Ro3Emu:Panel:Registration (docs/guide/hosting.md).")]
+    private static partial void LogNoSignUp(ILogger logger);
+
     private static string RepositoryRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
@@ -581,6 +616,7 @@ internal sealed class GameLoopTickers(IServiceProvider services) : IHostedServic
         Add<TimedBattleService>();
         Add<CasualBattleService>();
         Add<FestivalService>();
+        Add<RankRewardService>();
         Add<TrainingService>();
         Add<GuildHomeService>();
         Add<GuildCampfireService>();
@@ -609,6 +645,7 @@ internal sealed class GameLoopTickers(IServiceProvider services) : IHostedServic
         Add<PowerService>(); // throttled 31502/31503 republish of changed power
         Add<Voice.VoiceRooms>(); // VAD silence timeout every tick, team-membership sweep every second
         Add<GuildVoiceService>(); // guild voice channels: drops the offline and those no longer in the guild, every second
+        Add<TavernService>(); // Tavern rooms: time in a room, offline members, mutes and tags, every second
         return Task.CompletedTask;
     }
 

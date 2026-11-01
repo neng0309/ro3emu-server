@@ -142,6 +142,8 @@ public sealed class GameSession(PhonestChannel channel, TrafficLog traffic)
 
     /// <summary>Authoritative cast generation; delayed effects cannot outlive an interrupted/replaced cast.</summary>
     public ActiveSkillCast? SkillCast { get; set; }
+    /// <summary>The running Skill Bar Lineup (CombatService.StartLineup); pressing the Skill Bar again replaces it.</summary>
+    internal object? LineupRun { get; set; }
     public SemaphoreSlim SkillCastGate { get; } = new(1, 1);
     public List<SkillObject> SkillObjects { get; } = new();
     public Dictionary<(int Group, int Mode), long> SkillModeCds { get; } = new();
@@ -192,8 +194,20 @@ public sealed class GameSession(PhonestChannel channel, TrafficLog traffic)
     /// <summary>Time of the last accepted walk (speed check).</summary>
     public DateTime LastWalkUtc { get; set; }
 
-    /// <summary>Walk check refusals of this session (logged sparsely).</summary>
-    internal int WalkCheckWarnings { get; set; }
+    /// <summary>The distance the walk check still lets this client report (SceneService.AcceptWalkAsync).</summary>
+    internal WalkAllowance WalkAllowance { get; } = new();
+
+    /// <summary>The game message budgets of this connection (GameMessageHandler.WithinRate).</summary>
+    internal SessionRates? MessageRates { get; set; }
+
+    /// <summary>The chat line budget of this connection (ChatService).</summary>
+    internal RateBucket? ChatLines { get; set; }
+
+    /// <summary>The same for flight moves (WorldCoreService.FlyMoveAsync), at the flight speed.</summary>
+    internal WalkAllowance FlightAllowance { get; } = new();
+
+    /// <summary>WalkReq.dir of the last accepted walk: degrees, 0 = +z, clockwise toward +x.</summary>
+    public float WalkDir { get; set; }
 
     /// <summary>The last accepted walk was a move, not a stop: the client is somewhere along it now.</summary>
     public bool Walking { get; set; }
@@ -240,6 +254,8 @@ public sealed class GameSession(PhonestChannel channel, TrafficLog traffic)
     public PronteraDefenseService.State? Defense { get; set; }
     public TimedBattleService.State? TimedBattle { get; set; }
     public int EventFaction { get; set; }
+    /// <summary>EntityBase.teamId on this player's unit: its party (TeamService.SyncUnitTeamAsync), 0 when solo.</summary>
+    public long UnitTeamId { get; set; }
     public Romsg.DBTrainingGroundInfo? Training { get; set; }
     public long? ActivityServerDay { get; set; }
     public Romsg.DBLotteryData? Lottery { get; set; }
@@ -253,6 +269,9 @@ public sealed class GameSession(PhonestChannel channel, TrafficLog traffic)
 
     /// <summary>Chat emoticons unlocked by items (5041, role blob "emoji_info"); EmojiService.</summary>
     public Romsg.DBEmojiInfo? EmojiInfo { get; set; }
+
+    /// <summary>Tavern Star Power, active days and today's time in a room (5043, role blob "barroom"); TavernService.</summary>
+    public TavernService.RoleState? Tavern { get; set; }
 
     /// <summary>Profile card presets and 620 item unlocks (5016, role blob "personal"; other unlockInfos are derived); PersonalService.</summary>
     public Romsg.DBPersonalInfo? Personal { get; set; }
