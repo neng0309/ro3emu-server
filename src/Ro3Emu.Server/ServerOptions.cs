@@ -16,6 +16,24 @@ public sealed class ServerOptions
         : System.Net.IPAddress.TryParse(PublicHost, out var host) && System.Net.IPAddress.IsLoopback(host) ? System.Net.IPAddress.Loopback
         : System.Net.IPAddress.Any;
 
+    /// <summary>The web panel's listen address: its own bind address, else the server's.</summary>
+    public System.Net.IPAddress PanelListenAddress() =>
+        Panel.BindAddress is { Length: > 0 } bind ? System.Net.IPAddress.Parse(bind) : ListenAddress();
+
+    /// <summary>
+    /// Only this machine reaches the server: the client is told a loopback address, the game ports and the panel listen
+    /// on loopback and no proxy serves the panel (<see cref="Ro3Emu.Panel.PanelOptions.PublicFacing"/>). Local play and
+    /// the tests. A public <see cref="PublicHost"/> with a loopback bind is a tunnel (frp, ssh -R, nginx stream): it
+    /// delivers strangers to loopback. An address that does not parse counts as public, so a typo never opens GM.
+    /// </summary>
+    public bool LocalOnly()
+    {
+        if (!System.Net.IPAddress.TryParse(PublicHost, out var told) || !System.Net.IPAddress.IsLoopback(told)) return false;
+        if (BindAddress is { Length: > 0 } bind && !System.Net.IPAddress.TryParse(bind, out _)) return false;
+        if (Panel.BindAddress is { Length: > 0 } panel && !System.Net.IPAddress.TryParse(panel, out _)) return false;
+        return System.Net.IPAddress.IsLoopback(ListenAddress()) && !Panel.PublicFacing(PanelListenAddress());
+    }
+
     /// <summary>The voice relay serves whenever a port is set (the stream is sealed, so off loopback too).</summary>
     public bool VoiceServed() => Voice.Port > 0;
 
@@ -69,6 +87,12 @@ public sealed class ServerOptions
     /// </summary>
     public string WalkCheck { get; set; } = "enforce";
 
+    /// <summary>
+    /// Travel check (SceneService.Travel): which raw 30012 and 30131 requests a client may send. "enforce" (default) refuses
+    /// the others, "log" counts them and lets them through (CheatMonitor), "off" skips the check.
+    /// </summary>
+    public string TravelCheck { get; set; } = "enforce";
+
     /// <summary>Anti-cheat limits and the web panel's suspicious-activity thresholds (CheatMonitor, docs/systems/anticheat.md).</summary>
     public AntiCheatOptions AntiCheat { get; set; } = new();
 
@@ -114,9 +138,10 @@ public sealed class ServerOptions
 
     /// <summary>
     /// What an empty <see cref="GmAccounts"/> means in game: true = every account has GM (research server, tests,
-    /// local play), false = nobody has GM. Left unset, ServerHost decides from the host environment: false when it was
-    /// set to Production explicitly (ASPNETCORE_ENVIRONMENT, DOTNET_ENVIRONMENT or --environment), true otherwise. The
-    /// loopback HTTP POST /ro3emu/gm (the operator's tools) keeps the old rule either way: empty = every account.
+    /// local play), false = nobody has GM. Left unset, ServerHost decides: true only on a server that only this machine
+    /// reaches (<see cref="LocalOnly"/>) and that was not set to Production explicitly (ASPNETCORE_ENVIRONMENT,
+    /// DOTNET_ENVIRONMENT or --environment); false on a public bind, behind a proxy, or in Production. The loopback
+    /// HTTP POST /ro3emu/gm (the operator's tools) keeps the old rule either way: empty = every account.
     /// </summary>
     public bool? GmOpenWhenEmpty { get; set; }
 
@@ -145,6 +170,13 @@ public sealed class ServerOptions
 
     /// <summary>Tests: the credential limit and the gift code address limit apply to loopback too.</summary>
     public bool LoginLimitIncludesLoopback { get; set; }
+
+    /// <summary>
+    /// The operator token the loopback tools (/ro3emu/gm, /shutdown, /online, /reports, /metrics) must send in
+    /// X-Ro3Emu-Operator (Http.OperatorToken). Unset: a random one, kept in DataDir/operator.token. Set (at least 32
+    /// characters): this one, also written to that file, for scripts that already hold a secret.
+    /// </summary>
+    public string? OperatorToken { get; set; }
 
     /// <summary>
     /// A game login (SDK login) with an account name that has no account is refused instead of creating the account,

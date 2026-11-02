@@ -105,9 +105,8 @@ public sealed partial class CombatService
         {
             int group = (int)GameData.Int(row!.Value, "_iSkillID"), mode = (int)GameData.Int(row.Value, "_iMode");
             if (own == null && Math.Max(s.SkillCds.GetValueOrDefault(group), s.SkillModeCds.GetValueOrDefault((group, mode))) > Now) error = ErrorCodes.SkillCooldown;
-            // Preserve the established cooldown refusal for a repeated cast, including during its action tail.
             else if (s.SkillCast is { Cancelled: false } active && Now < active.StartMs + active.ChantMs + active.ActionMs
-                && (!new SkillConfig(row.Value).CancelCast || SwingInFlight(active, row.Value, req))) error = ErrorCodes.SkillBusy;
+                && !CastYields(active, row.Value, req)) error = ErrorCodes.SkillBusy;
             else error = ValidateTarget(s, row.Value, req, origin, owned == null ? WalkSlack(s) : 0,
                 _data.Row("SkillConfig", request.SkillId) is { } askedRow ? Range(askedRow) : 0);
         }
@@ -261,7 +260,31 @@ public sealed partial class CombatService
     }
 
     /// <summary>
-    /// A normal attack (_bCancelCast 1) may cut a skill's action short, but not the swing before it at the same target:
+    /// May this cast cut the running one short? The running skill decides, as in LC_Skill_RunTimeContext.SkillCanInterrupted;
+    /// the client reads _bCancelCast only for its cancel button. A normal attack during a normal attack keeps its own pacing.
+    /// </summary>
+    private bool CastYields(ActiveSkillCast active, JsonElement row, CastSkillReq req)
+    {
+        var next = new SkillConfig(row);
+        var running = new SkillConfig(active.Row);
+        if (next.IsNormalAttack(_data) && running.IsNormalAttack(_data)) return next.CancelCast && !SwingInFlight(active, row, req);
+        return CastYields(running.InterruptedType, running.Id == next.Id, Now - active.StartMs,
+            SkillShow.InterruptOffset(_data.SkillTemplate(running.ScriptShow), active.ChantMs, active.ActionMs));
+    }
+
+    /// <summary>
+    /// _iInterruptedType 1 yields to any other skill at once but not to itself; 2 yields to anything from the show's interrupt
+    /// time, which the client also takes from its own send: <see cref="SwingJitterMs"/> of slack (inferred). Others hold to the end.
+    /// </summary>
+    internal static bool CastYields(long interruptedType, bool sameSkill, long elapsedMs, int? interruptOffsetMs) => interruptedType switch
+    {
+        1 => !sameSkill,
+        2 => interruptOffsetMs is { } offset && elapsedMs >= offset - SwingJitterMs,
+        _ => false,
+    };
+
+    /// <summary>
+    /// A normal attack may not restart the swing before it at the same target:
     /// otherwise a burst of clicks restarts the swing each time and hits at click speed (issue #121). The client paces swings
     /// at the same ASPD-scaled action time (the normal attack shows' m_fInterruptTime is their whole length) from its own
     /// send, so network jitter can bring a legitimate next swing a little early: <see cref="SwingJitterMs"/> of slack (inferred).
@@ -301,7 +324,7 @@ public sealed partial class CombatService
     private static float Range(JsonElement row) => Math.Max(0, GameData.Int(row, "_iDistanceMax") / 100f);
     private static string Script(JsonElement row) => row.TryGetProperty("_kScriptLogic", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
     private static double[] Numbers(JsonElement row, string key) => row.TryGetProperty(key, out var list) && list.ValueKind == JsonValueKind.Array
-        ? list.EnumerateArray().Select(v => GameData.Number(v) ?? 0).ToArray() : [];
+        ? [.. list.EnumerateArray().Select(v => GameData.Number(v) ?? 0)] : [];
     private static IEnumerable<JsonElement> Tuples(JsonElement row, string key) => row.TryGetProperty(key, out var list) && list.ValueKind == JsonValueKind.Array
         ? list.EnumerateArray().Where(v => v.ValueKind == JsonValueKind.Array) : [];
 
@@ -414,25 +437,16 @@ public sealed partial class CombatService
         return 0;
     }
 
-    /// <summary>LC_ItemHelper.ItemCanUseInCurrentMap: MapConfig type/subtype blacklist (1) or whitelist (2).</summary>
-    private bool ItemAllowedInMap(GameSession s, int entry)
-    {
-        if (_data.Row("MapConfig", s.SceneEntry) is not { } map || _data.Row("ItemConfig", entry) is not { } item) return false;
-        // The Yggdrasil Leaf's _kUseLimit [1002] (inferred, ItemUseLimitConfig.ForbidsScene).
-        if (ItemUseLimitConfig.Forbids(_data, item, s.SceneEntry)) return false;
-        int mode = (int)GameData.Int(map, "_iLimitType");
-        if (mode is not (1 or 2)) return true;
-        bool listed = Tuples(map, "_kLimitItem").Any(t => t.GetArrayLength() >= 2 && GameData.Number(t[1]) ==
-            GameData.Int(item, GameData.Number(t[0]) == 1 ? "_iType" : "_iSubType"));
-        return mode == 1 ? !listed : listed;
-    }
+    /// <summary>The scene's item limit (<see cref="ItemMapLimit"/>), in a dungeon through its DungeonConfig row.</summary>
+    private bool ItemAllowedInMap(GameSession s, int entry) =>
+        _data.Row("ItemConfig", entry) is { } item && ItemMapLimit.Allows(_data, s.SceneEntry, item);
 
     private sealed class CastCosts
     {
-        public Dictionary<int, long> Attrs { get; } = new();
-        public List<(int Entry, long Count)> Items { get; } = new();
-        public Dictionary<int, long> Buffs { get; } = new();
-        public Dictionary<int, long> Energy { get; } = new();
+        public Dictionary<int, long> Attrs { get; } = [];
+        public List<(int Entry, long Count)> Items { get; } = [];
+        public Dictionary<int, long> Buffs { get; } = [];
+        public Dictionary<int, long> Energy { get; } = [];
         public bool Invalid { get; set; }
     }
 

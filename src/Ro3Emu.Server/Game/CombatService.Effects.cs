@@ -23,7 +23,7 @@ public sealed class SkillObject : WorldUnit
     public bool Removing { get; set; }
     public int Charges { get; set; }
     public int ProtectionDistanceType { get; init; }
-    public HashSet<int> Skills { get; } = new();
+    public HashSet<int> Skills { get; } = [];
 
     public override EntityBase Entity() => new()
     {
@@ -101,8 +101,8 @@ public sealed partial class CombatService
         bool InShape(MonsterUnit m) => radiusOverride is { } radius
             ? (height <= 0 || MathF.Abs(m.Y - center.Y) <= height) && Distance(center, m.Pos) <= radius + 0.1f
             : SkillAreaContains(row, action.Origin, center, action.Request.Face, m.Pos);
-        return _world.Map(s.WorldScene).Units.OfType<MonsterUnit>().Where(m => m.Hp > 0 && CanHitMonster(s, m) && Relation(row, false, race: m.Template.Race) && InShape(m))
-            .OrderBy(m => Distance(center, m.Pos)).ThenBy(m => m.Uid).Take(max).ToList();
+        return [.. _world.Map(s.WorldScene).Units.OfType<MonsterUnit>().Where(m => m.Hp > 0 && CanHitMonster(s, m) && Relation(row, false, race: m.Template.Race) && InShape(m))
+            .OrderBy(m => Distance(center, m.Pos)).ThenBy(m => m.Uid).Take(max)];
     }
 
     private async Task ApplyEffectsAsync(GameSession s, ActiveSkillCast action, Vec3 center, SkillObject? field = null,
@@ -137,7 +137,7 @@ public sealed partial class CombatService
                 .Concat(playerTargets.Select(p => (Id: p.Role!.Id, Distance: PlayerDistance(s, p))))
                 .OrderBy(p => p.Distance).ThenBy(p => p.Id).Take(maxTargets).Select(p => p.Id).ToHashSet();
             targets.RemoveAll(m => !selected.Contains(m.Uid));
-            await HitEventPlayersAsync(s, playerTargets.Where(p => selected.Contains(p.Role!.Id)).ToArray(),
+            await HitEventPlayersAsync(s, [.. playerTargets.Where(p => selected.Contains(p.Role!.Id))],
                 row, action.Request.SkillId, HitEffect(GameData.Int(row, "_iScriptShow")), action.Id, CanApplyMoreEffects,
                 action.GuardianDamage == null ? null : (id, amount) => RecordGuardianDamage(action, id, amount), center);
             if (IsGuardianEffect(row))
@@ -228,7 +228,7 @@ public sealed partial class CombatService
                 if (CanApplyMoreEffects() && !target.Dead && target.Hp > 0) await DisplaceTargetAsync(s, action, target, center);
             }
             // Buff1 is self for hostile selectors, but actual friend recipients for ally selectors (Detoxify, Blessing).
-            foreach (var recipient in friendly ? allies : new List<GameSession> { s })
+            foreach (var recipient in friendly ? allies : [s])
             {
                 if (!CanApplyMoreEffects()) break;
                 if (field == null)
@@ -250,13 +250,9 @@ public sealed partial class CombatService
                     foreach (var handler in Healed) handler(s, actual);
                     foreach (var handler in HealedAsync) await handler(s, actual);
                 }
-                if (script is "Detoxify" or "HealingSkills")
-                {
-                    // (inferred) cleanse exact described groups rather than removing every beneficial/hostile status.
-                    int[] groups = script == "Detoxify" ? [9030] : [9023, 9025];
-                    foreach (var buff in recipient.Buffs.Where(b => _data.Row("BuffConfig", b.ConfigId) is { } br && groups.Contains((int)GameData.Int(br, "_iBuffID"))).ToArray())
+                if (CleanseKinds(row) is { Length: > 0 } kinds)
+                    foreach (var buff in recipient.Buffs.Where(b => BuffConfig.Get(_data, b.ConfigId) is { } config && Cleanses(kinds, config)).ToArray())
                         await _buffs.RemoveAsync(recipient, buff);
-                }
             }
             if (hit.Dsts.Count > 0)
             {
@@ -270,7 +266,7 @@ public sealed partial class CombatService
                     });
                 }
                 if (CurrentCaster() && hit.Dsts.Any(d => d.HitResult != DamageHitResult.Miss)) await _buffs.RecoverEnergyOnHitAsync(s, row);
-                var sourceViewers = CurrentCaster() ? _world.Viewers(s).Append(s) : Enumerable.Empty<GameSession>();
+                var sourceViewers = CurrentCaster() ? _world.Viewers(s).Append(s) : [];
                 var hitViewers = processed.SelectMany(t => t.Viewers).Concat(sourceViewers).Distinct().ToArray();
                 await SendHitBulletsAsync(hitViewers, row, hit, castingRole.Id);
                 foreach (var viewer in hitViewers) await viewer.SendGameAsync(SkillHit, hit);
@@ -323,6 +319,26 @@ public sealed partial class CombatService
                 await handler(s, action, processed, hit);
             }
     }
+
+    private const int PoisonedKind = 1;
+
+    /// <summary>The status kinds (the first value of BuffConfig._kBuffCategory) a skill removes from its recipient. Healing
+    /// Skills name theirs in _kLogicData: Cleanse [6, 5] Silence and Blind, Cleanse2 also [13, 9, 10] Stun, Frozen and
+    /// Petrify. Antidote (jieduji, "Removes the Poisoned status from yourself") has no data. Detoxify (PoisonBoom,
+    /// _kLogicData [9030], the Poisoned group) reads "immunity to Poisoned damage"; (inferred) that ends a running poison.</summary>
+    internal static int[] CleanseKinds(JsonElement row) => Script(row) switch
+    {
+        "Cleanse" or "Cleanse2" => [.. Numbers(row, "_kLogicData").Select(kind => (int)kind)],
+        "PoisonBoom" or "jieduji" => [PoisonedKind],
+        _ => [],
+    };
+
+    /// <summary>A hostile buff (_iType 2) of one of the kinds or of their copies, which keep the status's name at kind + 50
+    /// and + 79 (Silence: 9023 kind 6, 9065 kind 56, 9084 kind 85). (inferred) A cleanse removes the copies too. A buff with
+    /// _iDisperse 0 stays, as for a dispel (BuffService.DispelControlsAsync): a boss's Frozen 4115501 is one.</summary>
+    internal static bool Cleanses(int[] kinds, BuffConfig buff) =>
+        buff.Type == 2 && buff.Disperse != 0
+        && buff.BuffCategory is [var kind, ..] && kinds.Any(k => kind == k || kind == k + 50 || kind == k + 79);
 
     /// <summary>
     /// An extra cast of a SkillConfig row on monsters the caller chose, through the ordinary effect path (damage, kills,

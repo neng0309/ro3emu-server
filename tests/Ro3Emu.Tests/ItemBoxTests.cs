@@ -64,7 +64,7 @@ public sealed class ItemBoxTests : IAsyncLifetime
     private async Task Gm(BotClient bot, string command)
     {
         using var client = new HttpClient();
-        (await client.PostAsync($"{_http}/ro3emu/gm?account={bot.Account}", new StringContent(command))).EnsureSuccessStatusCode();
+        (await client.PostAsync($"{_http}/ro3emu/gm?account={bot.Account}", Operator.Command(command))).EnsureSuccessStatusCode();
     }
 
     private static async Task<T> Next<T>(BotClient bot, uint id, MessageParser<T> parser, Func<T, bool>? match = null) where T : IMessage<T>
@@ -115,9 +115,9 @@ public sealed class ItemBoxTests : IAsyncLifetime
         Assert.Equal(0, used.Result);
         Assert.Equal((1300008, 1, 0), (used.ItemId, used.ItemCount, used.ItemTimes));
         var shown = await Next(bot, CharacterService.GetRewardNotify, GetRewardNotify.Parser, m => !m.RewardType.Contains(1));
-        Assert.Equal(new[] { 2 }, shown.RewardType.ToArray());
-        Assert.Equal(new[] { (1, 500), (1200500, 100), (1430400, 1) },
-            shown.Rewards.Select(r => (r.ItemEntry, r.Stack)).Order().ToArray());
+        Assert.Equal([2], [.. shown.RewardType]);
+        Assert.Equal([(1, 500), (1200500, 100), (1430400, 1)],
+            [.. shown.Rewards.Select(r => (r.ItemEntry, r.Stack)).Order()]);
         Assert.Equal(2, Count(bot, 1300008));
         Assert.Equal(1, Count(bot, 1430400));
         Assert.Equal(100, Count(bot, 1200500));
@@ -169,7 +169,7 @@ public sealed class ItemBoxTests : IAsyncLifetime
         Assert.Equal(1, Count(bot, 2030120));
         Assert.Equal(0, Count(bot, 2020120));
         var shown = await Next(bot, CharacterService.GetRewardNotify, GetRewardNotify.Parser, m => !m.RewardType.Contains(1));
-        Assert.Equal(new[] { 2 }, shown.RewardType.ToArray());
+        Assert.Equal([2], [.. shown.RewardType]);
         Assert.Equal(3, shown.Rewards.Count); // each weapon instance with its own roll
     }
 
@@ -184,7 +184,7 @@ public sealed class ItemBoxTests : IAsyncLifetime
         long potions = Count(bot, 1000000);
         Assert.Equal(0, (await Use(bot, 1300018, 1, new ItemUseParamInfo { IsFirstHeartBox = true })).Result);
         var shown = await Next(bot, CharacterService.GetRewardNotify, GetRewardNotify.Parser, m => !m.RewardType.Contains(1));
-        Assert.Equal(new[] { 5 }, shown.RewardType.ToArray());
+        Assert.Equal([5], [.. shown.RewardType]);
         Assert.Equal(0, Count(bot, 1300018));
         Assert.Equal(1, Count(bot, 1300019)); // the next chest
         Assert.Equal(potions + 5, Count(bot, 1000000));
@@ -259,28 +259,12 @@ public sealed class ItemBoxTests : IAsyncLifetime
         await Gm(other, "!item 1300000 1"); // _iSexNeed 1
         Assert.Equal(CharacterService.ErrSexNeed, (await Use(other, 1300000)).Result);
 
-        // Fly Wing 1002001 _kUseLimit [1001]: ItemUseLimitConfig 1001 _iLimitType 1, maps [10110,10111], read as forbidden
-        // maps (inferred). A new role starts on 10111 (SpawnSceneEntry): refused there and not spent, used on 10100.
+        // Fly Wing 1002001 _kUseLimit [1001] names maps [10110,10111], which is not enforced (ItemMapLimit): it works on
+        // the starting map 10111 (SpawnSceneEntry).
         await Gm(bot, "!item 1002001 2");
         Assert.Equal(RoleStore.SpawnSceneEntry, await SceneOf(bot));
-        Assert.Equal(ErrorCodes.ItemUseAreaForbidden, (await Use(bot, 1002001)).Result);
-        Assert.Equal(2, Count(bot, 1002001));
-        await Warp(bot, 10100);
-        Assert.Equal(10100, await SceneOf(bot));
         Assert.Equal(0, (await Use(bot, 1002001)).Result);
         Assert.Equal(1, Count(bot, 1002001));
-    }
-
-    private async Task Warp(BotClient bot, int scene)
-    {
-        using (var sw = bot.Inbox.Expect(e => e.IsGame(MsgId.SwitchSceneLine)))
-        {
-            await Gm(bot, $"!warp {scene}");
-            await sw.WaitAsync(Wait);
-        }
-        using var self = bot.Inbox.Expect(e => e.IsGame(MsgId.EntitySelf));
-        await bot.SendGameAsync(MsgId.SceneLoaded, new SceneLoadedReq { SceneId = scene });
-        await self.WaitAsync(Wait);
     }
 
     private Task<long> SceneOf(BotClient bot) => Service<GameLoop>().InvokeAsync(() => Task.FromResult(

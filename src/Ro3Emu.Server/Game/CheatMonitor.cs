@@ -18,7 +18,8 @@ public sealed partial class CheatMonitor(IOptions<ServerOptions> options, Accoun
 {
     /// <summary>The kinds of refusal (anticheat_refusal.kind).</summary>
     public const string Walk = "walk", Flight = "flight", Cannon = "cannon", QuestArea = "quest-area",
-        QuestInteract = "quest-interact", Flood = "flood", RoleLimit = "role-limit", Chat = "chat", Payload = "payload";
+        QuestInteract = "quest-interact", Flood = "flood", RoleLimit = "role-limit", Chat = "chat", Payload = "payload",
+        Travel = "travel";
 
     /// <summary>The first refusals of an account and kind are logged one by one, then every this many.</summary>
     internal const int LogFirst = 5, LogEvery = 50;
@@ -79,7 +80,8 @@ public sealed partial class CheatMonitor(IOptions<ServerOptions> options, Accoun
         if (refusals.Length == 0 && exp.Length == 0) return;
         long keep = clock.GetUtcNow().ToUnixTimeMilliseconds() / HourMs - Math.Max(1, options.Value.AntiCheat.KeepDays) * 24L;
         try { await accounts.WriteAsync<int>(new AntiCheatFlushPlan(refusals, exp, keep)); }
-        catch (Exception e) when (e is SqliteException or IOException or InvalidOperationException or ObjectDisposedException)
+        catch (Exception e) when (e is SqliteException or IOException or PersistenceException
+            or InvalidOperationException or ObjectDisposedException)
         {
             LogFlushFailed(log, e);
             lock (_sync)
@@ -125,7 +127,7 @@ public sealed partial class CheatMonitor(IOptions<ServerOptions> options, Accoun
 
 /// <summary>
 /// A token bucket: <see cref="PerSecond"/> tokens a second up to <see cref="Burst"/>, full at first. Not thread safe: a
-/// session's buckets are used on the game loop only.
+/// game session's buckets are used on the game loop only, a micro connection's by its own frame reader.
 /// </summary>
 internal sealed class RateBucket(double perSecond, double burst)
 {

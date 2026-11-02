@@ -64,7 +64,7 @@ public sealed class CharacterTests : IAsyncLifetime
     private async Task Gm(string account, string line)
     {
         using var http = new HttpClient();
-        var resp = await http.PostAsync($"{_http}/ro3emu/gm?account={account}", new StringContent(line));
+        var resp = await http.PostAsync($"{_http}/ro3emu/gm?account={account}", Operator.Command(line));
         resp.EnsureSuccessStatusCode();
     }
 
@@ -93,7 +93,7 @@ public sealed class CharacterTests : IAsyncLifetime
         Assert.NotNull(potion.ItemBindInfo);
         Assert.Contains(potion.ItemGuid, consumables.SortedIndex.Keys);
         var gear = bag.PackInfo[2].All.Items.Values;
-        Assert.Equal(new[] { Dagger, Shirt }, gear.Select(i => i.ItemEntry).Order());
+        Assert.Equal([Dagger, Shirt], gear.Select(i => i.ItemEntry).Order());
         Assert.All(gear, i => Assert.Equal(1, i.ItemInfos[3].LongVal)); // appraised
         Assert.Equal(1000, bag.Currency[1].All);
 
@@ -239,7 +239,7 @@ public sealed class CharacterTests : IAsyncLifetime
         var points = await Next(alice, CharacterService.BaseAttrSync, BaseAttrInfoIncrement.Parser, m => !m.SyncAllMark);
         Assert.Equal(48 + 8 * 2 + 4, points.AllPlanBaseProperty[0].Inc.AttrPoints); // BaseLvConfig: lv2-9 +2, lv10 +4
 
-        // STR 1 -> 5 costs 4 x 2 (BasePointConfig); a value lower than now is refused.
+        // STR 1 -> 5 costs 4 x 2 (BasePointConfig); the panel can then lower it again.
         var req = new AllocateAttrPointReq { PlanIndex = 0 };
         foreach (var (stat, value) in new[] { (1, 5), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1) }) req.Points[stat] = value;
         await alice.SendGameAsync(CharacterService.AllocateAttrPoints, req);
@@ -253,7 +253,11 @@ public sealed class CharacterTests : IAsyncLifetime
 
         req.Points[1] = 2;
         await alice.SendGameAsync(CharacterService.AllocateAttrPoints, req);
-        Assert.NotEqual(0, (await Next(alice, CharacterService.AllocateAttrPoints, AllocateAttrPointRsp.Parser)).Result);
+        var lowered = await Next(alice, CharacterService.AllocateAttrPoints, AllocateAttrPointRsp.Parser);
+        Assert.Equal(0, lowered.Result);
+        Assert.Equal(2, lowered.PlanBaseProperty.BaseProperty[1]);
+        Assert.Equal(2, lowered.PlanBaseProperty.UsedAttrPoints);
+        Assert.Equal(68 - 2, lowered.PlanBaseProperty.AttrPoints);
 
         await alice.SendGameAsync(CharacterService.ResetAttrPoints, new ResetAttrPointReq { PlanIndex = 0 });
         Assert.Equal(0, (await Next(alice, CharacterService.ResetAttrPoints, ResetAttrPointResp.Parser)).Result);
@@ -269,7 +273,7 @@ public sealed class CharacterTests : IAsyncLifetime
     {
         await using var alice = await InWorld("Alice");
         await Next(alice, CharacterService.RoleBaseInfoSync, RoleBaseInfoIncrement.Parser);
-        await Gm("alice", "!exp 15 2"); // BaseLvConfig lv1 needs 5, lv2 8 -> lv3 with 2; JobLvConfig 101/102 need 1 each -> job 3
+        await Gm("alice", "!exp 15"); // BaseLvConfig lv1 needs 5, lv2 8 -> lv3 with 2; its 3 Job EXP: JobLvConfig 101/102 need 1 each -> job 3
         var info = await Next(alice, CharacterService.RoleBaseInfoSync, RoleBaseInfoIncrement.Parser, m => !m.SyncAllMark);
         Assert.Equal(3, info.Level);
         Assert.Equal(2, info.Exp);
@@ -604,7 +608,7 @@ public sealed class CharacterTests : IAsyncLifetime
         Assert.Equal(5, skills.SkillAssignPlans.All.Value.Count);
         Assert.Equal(0, skills.CurrentPlanIndex);
         var plan = skills.SkillAssignPlans.All.Value[skills.CurrentPlanIndex];
-        Assert.Equal(new[] { 10000, 10002, 10003 }, plan.SkillAssigns.Keys.Order());
+        Assert.Equal([10000, 10002, 10003], plan.SkillAssigns.Keys.Order());
         Assert.Equal(0, plan.SkillAssigns[10002].SkillLevel); // Smite activates at base level 5
 
         // Keep the master's learned-Smite wheel assertion after the configured activation level.

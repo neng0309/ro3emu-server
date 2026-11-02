@@ -207,7 +207,7 @@ public sealed class TimedEventTests : IAsyncLifetime
     private async Task Gm(BotClient bot, string command)
     {
         using var client = new HttpClient();
-        (await client.PostAsync($"{_http}/ro3emu/gm?account={bot.Account}", new StringContent(command))).EnsureSuccessStatusCode();
+        (await client.PostAsync($"{_http}/ro3emu/gm?account={bot.Account}", Operator.Command(command))).EnsureSuccessStatusCode();
     }
 
     /// <summary>
@@ -512,6 +512,7 @@ public sealed class TimedEventTests : IAsyncLifetime
         await OnLoop(() =>
         {
             Assert.True(Service<TimedBattleService>().CanFight(Session(alice), Session(bob)));
+            Session(bob).NoRegenUntilMs = long.MaxValue; // a recovery tick would lift this 1 HP out of one lethal hit
             Session(bob).CurrentHp = 1;
             return Task.CompletedTask;
         });
@@ -627,6 +628,7 @@ public sealed class TimedEventTests : IAsyncLifetime
         {
             Assert.False(Service<TimedBattleService>().CanFight(Session(alice), Session(bob)));
             Assert.True(Service<TimedBattleService>().CanFight(Session(alice), Session(cara)));
+            Session(cara).NoRegenUntilMs = Session(dan).NoRegenUntilMs = long.MaxValue; // a recovery tick would lift this 1 HP out of one lethal hit
             Session(cara).CurrentHp = 1;
             Session(dan).CurrentHp = 1;
             return Task.CompletedTask;
@@ -892,7 +894,7 @@ public sealed class TimedEventTests : IAsyncLifetime
             await Gm(bot, "!lvl 99");
             await WarpRiftMapAsync(bot);
         }
-        return bots.ToArray();
+        return [.. bots];
     }
 
     private async Task<long> RiftPartyAsync(BotClient leader, params BotClient[] others)
@@ -1005,8 +1007,8 @@ public sealed class TimedEventTests : IAsyncLifetime
         await ada.SendGameAsync(TimedBattleService.OnePieceInfo, new HiddenTreasureRoundInfoReq());
         var vault = await Next(ada, TimedBattleService.OnePieceInfo, HiddenTreasureRoundInfoResp.Parser, r => r.IsOpen);
         // _updateGargoyles: [1] Special Commendation, [2] Commendation Gift Box, [3] Standard Compensation Chests (weekly).
-        Assert.Equal(new[] { (1302001, 5L), (1302002, 5L), (1302000, 20L) },
-            vault.ItemInfo.Select(i => (i.ItemId, i.MaxGainCount)).ToArray());
+        Assert.Equal([(1302001, 5L), (1302002, 5L), (1302000, 20L)],
+            [.. vault.ItemInfo.Select(i => (i.ItemId, i.MaxGainCount))]);
         Assert.All(vault.ItemInfo, i => Assert.Equal(0, i.CurGainCount));
 
         var stone = await GmRiftStoneAsync(ada, "!rift 1 Cat");
@@ -1045,8 +1047,8 @@ public sealed class TimedEventTests : IAsyncLifetime
         // OnePieceMonsterConfig[16100001]: award 9101 (10000 Minted Coin), extra 9201 (gift box + chest).
         Assert.All(results, r => Assert.Equal((2, 10000), (r.Data.OnePieceData.BaseReward.Single().ItemEntry,
             r.Data.OnePieceData.BaseReward.Single().Stack)));
-        Assert.Equal(new[] { 1302002, 1302000 }, results[0].Data.OnePieceData.ExtraReward.Select(i => i.ItemEntry).ToArray());
-        Assert.Equal(new[] { 1302000 }, results[1].Data.OnePieceData.ExtraReward.Select(i => i.ItemEntry).ToArray());
+        Assert.Equal([1302002, 1302000], [.. results[0].Data.OnePieceData.ExtraReward.Select(i => i.ItemEntry)]);
+        Assert.Equal([1302000], [.. results[1].Data.OnePieceData.ExtraReward.Select(i => i.ItemEntry)]);
         Assert.Empty(results[2].Data.OnePieceData.ExtraReward); // UIWords 68002: no additional rewards
         for (int i = 0; i < bots.Length; i++)
             Assert.Equal(coins[i] + 10000, Service<CharacterService>().CountOf(Session(bots[i]), 2));
@@ -1067,14 +1069,14 @@ public sealed class TimedEventTests : IAsyncLifetime
 
         await ada.SendGameAsync(TimedBattleService.OnePieceInfo, new HiddenTreasureRoundInfoReq());
         vault = await Next(ada, TimedBattleService.OnePieceInfo, HiddenTreasureRoundInfoResp.Parser, r => r.IsOpen);
-        Assert.Equal(new[] { 0L, 1L, 1L }, vault.ItemInfo.Select(i => i.CurGainCount).ToArray());
+        Assert.Equal([0L, 1L, 1L], [.. vault.ItemInfo.Select(i => i.CurGainCount)]);
         // RestrictConfig 1020 is daily (_iRecoverType 1): the next day has 10 again, the week's items stay.
         var now = _clock.GetUtcNow();
         _clock.Set(now.AddDays(1).ToUnixTimeSeconds());
         await ada.SendGameAsync(TimedBattleService.OnePieceInfo, new HiddenTreasureRoundInfoReq());
         vault = await Next(ada, TimedBattleService.OnePieceInfo, HiddenTreasureRoundInfoResp.Parser);
         Assert.Equal(10, await RiftCountAsync(ada));
-        Assert.Equal(new[] { 0L, 1L, 1L }, vault.ItemInfo.Select(i => i.CurGainCount).ToArray());
+        Assert.Equal([0L, 1L, 1L], [.. vault.ItemInfo.Select(i => i.CurGainCount)]);
         // The item caps are weekly (_iRecoverType 2): the next Monday starts from zero.
         _clock.Set(now.AddDays(4).ToUnixTimeSeconds());
         await ada.SendGameAsync(TimedBattleService.OnePieceInfo, new HiddenTreasureRoundInfoReq());

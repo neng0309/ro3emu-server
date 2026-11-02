@@ -15,8 +15,8 @@ namespace Ro3Emu.Tests;
 /// </summary>
 public sealed partial class DungeonTests
 {
-    public static TheoryData<long> ScriptedScenes() => new(new ReconstructedDungeons(
-        Options.Create(new ServerOptions())).AllScripted.Select(s => s.Scene).Order());
+    public static TheoryData<long> ScriptedScenes() => [.. new ReconstructedDungeons(
+        Options.Create(new ServerOptions())).AllScripted.Select(s => s.Scene).Order()];
 
     [ClientDataTheory]
     [MemberData(nameof(ScriptedScenes))]
@@ -264,8 +264,11 @@ public sealed partial class DungeonTests
         // Bobo carries buff group 53014, the NPC condition of 'Rescue Bobo'; the Deniro carries nothing yet.
         Assert.Equal([5301401], bobo.Buffs.Select(b => b.ConfigId));
         Assert.Empty(deniro.Buffs);
-        var seen = alice.Inbox.Snapshot().Where(e => e.IsGame(GameAoiSink.SyncAoiView))
-            .SelectMany(e => AoIViewChangeData.Parser.ParseFrom(e.Body).Bases).Last(b => b.Uuid == (ulong)bobo.Uid);
+        // ActorsWhen reads the server's state; the view that shows it to the client is still on its way.
+        IEnumerable<EntityBase> BoboSeen() => alice.Inbox.Snapshot().Where(e => e.IsGame(GameAoiSink.SyncAoiView))
+            .SelectMany(e => AoIViewChangeData.Parser.ParseFrom(e.Body).Bases).Where(b => b.Uuid == (ulong)bobo.Uid);
+        await Until(() => BoboSeen().Any(), "Bobo in the client's view");
+        var seen = BoboSeen().Last();
         Assert.Equal((5300041UL, 1, 5301401), (seen.EntityTemplateID, seen.EntityType, seen.BuffData.AddBuffs.Single().ConfigId));
 
         await Beside(alice, deniro.X, deniro.Y, deniro.Z);
@@ -674,7 +677,7 @@ public sealed partial class DungeonTests
         {
             shown = await Service<GameLoop>().InvokeAsync(() => Task.FromResult(
                 Session(bot).DungeonAttempt?.SceneActors.ToArray() ?? []));
-            if (ready(shown)) return shown.Where(a => match == null || match(a)).ToArray();
+            if (ready(shown)) return [.. shown.Where(a => match == null || match(a))];
             await Task.Delay(20);
         }
         throw new TimeoutException($"The scene actors did not reach the expected state; shown: {string.Join(", ", shown.Select(a => $"{a.NpcId}@{a.Point}[{string.Join('/', a.Buffs.Select(b => b.ConfigId))}]"))}");
