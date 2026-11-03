@@ -34,6 +34,7 @@ public static class ErrorCodes
     public const int FeatureUnavailable = 28;   // unavailable feature
     public const int ActionInBattle = 47;      // NW_ProtobufDefine.ERR_PlayerActionNotAllowedInBattle
     public const int Parameter = 82;            // "Client Parameter error"
+    public const int TooManyRequests = 1108;    // "Too many requests. Please try again later."
 
     // Activities: ErrorCodeConfig + Localization_en. Selection for each RPC is inferred from these texts.
     public const int ActivityClosed = 3902;      // "Event Not Available"
@@ -98,6 +99,7 @@ public static class ErrorCodes
     public const int RiftPartyTooSmall = 6755;    // "The party does not meet the required number of players."
     public const int RiftNoParty = 6757;          // "You must be in a party to enter this mode." (ERR_EnterOnepieceNoTeam)
     public const int RiftMemberLocked = 6758;     // "A party Member does not meet the Hidden Vault Unlock Requirement"
+    public const int TreasurePointNotOnMap = 6502; // "Treasure-digging location is not on the map"
     public const int RiftMemberInVault = 6759;    // "A party Member is already in the Hidden Treasure Dungeon..."
 
     // Quests (texts carry the quest name as ${1})
@@ -118,6 +120,7 @@ public static class ErrorCodes
     public const int ItemLocked = 3357;         // "Contains locked items."
     public const int Cooldown = 161;            // "On cooldown. Please try again later."
     public const int UseWhileDead = 181;        // "Items cannot be used while the player is dead"
+    public const int ItemCannotBeUsed = 179;    // "Item cannot be used"
     public const int ItemUseForbidden = 180;    // "Item use is prohibited"
     public const int ItemUseAreaForbidden = 178; // "Items cannot be used in this area"
     public const int CurrencyShort = 192;       // "Insufficient Currency. Unable to purchase."

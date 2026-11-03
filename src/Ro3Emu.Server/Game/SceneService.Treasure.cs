@@ -22,7 +22,9 @@ public sealed partial class SceneService
         if (data.Row("TreasureHuntMapPointConfig", pointId) is not { } row) return null;
         long mapId = Data.GameData.Int(row, "_iMapId"), mapPoint = Data.GameData.Int(row, "_iMapPointId");
         if (worldData.Map(mapId) is not { } map || !map.Points.TryGetValue(mapPoint, out var position)) return null;
-        return (mapId, position);
+        // A few authored points float above the ground (1033 by 3.5 m). The client measures the dig spot in three dimensions
+        // against _iInteractDistance 2 (LC_InteractManager), so without this no Dig button ever shows there.
+        return (mapId, position with { Y = map.Nav?.WalkHeight(position.X, position.Z, position.Y) ?? position.Y });
     }
 
     internal MapPoint? ConfiguredPoint(long sceneEntry, long pointId) =>
@@ -33,7 +35,7 @@ public sealed partial class SceneService
     {
         if (session.Role == null || session.SceneLoading) return;
         var hunt = session.ActivityRuntime.AdventureTreasure;
-        if (hunt.PointId == 0 || hunt.Began + 10800 <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        if (hunt.PointId == 0 || hunt.Began + 10800 <= clock.GetUtcNow().ToUnixTimeSeconds()
             || TreasurePoint(hunt.PointId) is not { } target || target.Scene != session.SceneEntry
             || data.Row("NPCConfig", TreasureNpcId) is not { } npcRow) return;
         var npc = new WorldNpc(TreasureUid(session), target.Scene, WorldNpcKind.Npc, TreasureNpcId,

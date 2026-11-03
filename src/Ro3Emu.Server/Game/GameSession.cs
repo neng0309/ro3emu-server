@@ -131,6 +131,8 @@ public sealed class GameSession(PhonestChannel channel, TrafficLog traffic)
     /// <summary>C/D 17: the role's client settings, merged in memory and written lazily (SettingsPersistence).</summary>
     internal Romsg.DBSettingInfo? Settings { get; set; }
     internal Persistence.LazyRolePart.State? SettingsPart { get; set; }
+    /// <summary>The Bonus Time clock's lazy save (WildAfkPersistence).</summary>
+    internal Persistence.LazyRolePart.State? WildAfkPart { get; set; }
 
     /// <summary>Dead (HP 0, 31049 state 1) until revived (31013).</summary>
     public bool Dead { get; set; }
@@ -200,6 +202,8 @@ public sealed class GameSession(PhonestChannel channel, TrafficLog traffic)
 
     /// <summary>The distance the walk check still lets this client report (SceneService.AcceptWalkAsync).</summary>
     internal WalkAllowance WalkAllowance { get; } = new();
+    /// <summary>A swing a move cancelled holds the next normal attack until this time (CombatService.CancelCastAsync).</summary>
+    internal long SwingLockUntilMs { get; set; }
 
     /// <summary>The game message budgets of this connection (GameMessageHandler.WithinRate).</summary>
     internal SessionRates? MessageRates { get; set; }
@@ -247,6 +251,8 @@ public sealed class GameSession(PhonestChannel channel, TrafficLog traffic)
     /// <summary>Derived 5004 schedule refresh, independent of persisted progress/reset epochs.</summary>
     public long DailyWindowRefreshAt { get; set; }
     public long DailyWindowSampledAt { get; set; }
+    /// <summary>A reconciliation from the paced tick is queued (DailyActivityService.Tick).</summary>
+    internal bool DailyReconcileQueued { get; set; }
 
     /// <summary>Per-role seasonal activities (5013); the source lock serializes claims independently of inventory.</summary>
     public Romsg.DBNewActivityInfo? NewActivities { get; set; }
@@ -350,11 +356,14 @@ public sealed class GameSession(PhonestChannel channel, TrafficLog traffic)
 
     /// <summary>The leased items' PendantConfig ids (EntityBase.pendantInfo), derived from <see cref="CareerSpecial"/>.</summary>
     public int[] CareerPendants { get; set; } = [];
+    public int CareerMountPendant { get; set; }
     public Romsg.DBWardRobeInfo? Wardrobe { get; set; }
     public Romsg.DBTotemInfo? Totems { get; set; }
     public string TotemRefineEpoch { get; set; } = "";
     public Romsg.DBGenre? Genre { get; set; }
     public Romsg.DBSkillData? SkillPlans { get; set; }
+    /// <summary>The normal attack the last skill sync put on the wheel for the ridden battle mount (0 for the career's own).</summary>
+    internal int WheelAttack { get; set; }
     public DateTime TotemSwitchUtc { get; set; }
     /// <summary>5063 personal pre-buy counters and joined auction history.</summary>
     public Romsg.DBAuction? Auction { get; set; }

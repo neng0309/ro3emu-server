@@ -105,6 +105,7 @@ public sealed partial class CombatService
         {
             int group = (int)GameData.Int(row!.Value, "_iSkillID"), mode = (int)GameData.Int(row.Value, "_iMode");
             if (own == null && Math.Max(s.SkillCds.GetValueOrDefault(group), s.SkillModeCds.GetValueOrDefault((group, mode))) > Now) error = ErrorCodes.SkillCooldown;
+            else if (own == null && Now < s.SwingLockUntilMs - SwingJitterMs && new SkillConfig(row.Value).IsNormalAttack(_data)) error = ErrorCodes.SkillBusy;
             else if (s.SkillCast is { Cancelled: false } active && Now < active.StartMs + active.ChantMs + active.ActionMs
                 && !CastYields(active, row.Value, req)) error = ErrorCodes.SkillBusy;
             else error = ValidateTarget(s, row.Value, req, origin, owned == null ? WalkSlack(s) : 0,
@@ -134,7 +135,7 @@ public sealed partial class CombatService
         }
         if (lease?.Cancelled == true || !ReferenceEquals(s.Attachment, lease) ||
             s.SceneGeneration != scene || s.WorldScene != worldScene || s.SceneLoading) return;
-        int turn = owned == null ? SwingTurnLeft(s.SkillCast, row!.Value) : 0;
+        int turn = owned == null ? SwingLeft(s.SkillCast, row!.Value) : 0;
         await CancelCastAsync(s, SkillInterruptedInfo.Types.SkillInterruptType.Skill);
         _eventAttacks.Remove(s);
         await PayCostsAsync(s, costs);
@@ -143,10 +144,10 @@ public sealed partial class CombatService
         if (!lineup) await s.SendGameAsync(UseSkill, new CastSkillRsp { SessionId = id, IsAutoCast = req.IsAutoCast });
         var target = FindMonster(s.WorldScene, req.TargetId);
         var playerTarget = EventTarget(s, req.TargetId);
-        // _iIfAutoAtk 2 (enum_AutoNormalAttackType.AutoNormalAttack) follows the cast with the career's normal attack
+        // _iIfAutoAtk 2 (enum_AutoNormalAttackType.AutoNormalAttack) follows the cast with the current normal attack
         // (LC_AutoAttackAppendState: GetNormalSkill). Repeating the cast skill itself bypassed its cooldown: Blade
         // Smash and Sonic Slash fired every swing.
-        int loopSkill = new SkillConfig(row!.Value).IsNormalAttack(_data) ? req.SkillId : _skills.NormalAttack(s.Progress!.Career);
+        int loopSkill = new SkillConfig(row!.Value).IsNormalAttack(_data) ? req.SkillId : _skills.CurrentAttack(s);
         if (GameData.Int(row!.Value, "_iIfAutoAtk") == 2 && owned == null && target != null && CanHitMonster(s, target))
         {
             s.Attack = new AttackLoop
@@ -164,9 +165,34 @@ public sealed partial class CombatService
                 s.Position.X, s.Position.Z);
         if (own != null) await OwnSkillCast!(s, req.SkillId);
         else await StartCooldownAsync(s, row.Value, SkillConfig.Get(_data, request.SkillId) is { } asked ? (int)asked.Mode : null);
-        await StartCastAsync(s, row.Value, req, id, owned, lead);
+        await StartCastAsync(s, WargHuntRow(s, row.Value, req), req, id, owned, lead);
         if (owned == null && !lineup && new SkillConfig(row.Value).SystemType == SkillService.QueueSystemType)
             StartLineup(s, s.SkillCast);
+    }
+
+    private const string WargHuntScript = "WolvesShadow";
+    private const int WargHuntDashDesc = 4;
+
+    /// <summary>
+    /// Warg Hunt (_kScriptLogic WolvesShadow) is an entry row: its show only plays an animation. The wolves are in the shows
+    /// of its _kLogicData rows [near, far], Warg Hunt (Melee) and (Ranged): fx_skill_wughunt_01 and _02 on the target (three
+    /// of them at mode 0), the far row's dash effect and their own _kShowDmg. "If you are more than ${5}m from the target,
+    /// you also dash in front of it" chooses between them. The entry row has been checked and paid and runs the cooldown
+    /// the bar shows; the cast itself runs as the chosen row. The client only plays the row a 31100 names and no client code
+    /// reads this _kLogicData, so sending the chosen row in place of the entry row's timeline is (inferred).
+    /// Buffs select those groups' own modes (Warg King's 1332601: mode 1 of 13323, 13329 and 13330), so the row is looked up
+    /// from its mode 0.
+    /// </summary>
+    private JsonElement WargHuntRow(GameSession s, JsonElement row, CastSkillReq req)
+    {
+        var hunt = new SkillConfig(row);
+        if (hunt.ScriptLogic != WargHuntScript || hunt.LogicData is not [var near, var far] || req.TargetPos is not { } target
+            || hunt.DescData.Length <= WargHuntDashDesc
+            || !float.TryParse(hunt.DescData[WargHuntDashDesc], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float dash)
+            || SkillConfig.Get(_data, Distance(s.Position, target) >= dash ? far : near) is not { } chosen) return row;
+        var effective = EffectiveSkillRow(s, _skills.RealId((int)chosen.SkillId, (int)chosen.Level)) ?? chosen.Row;
+        req.SkillId = (int)new SkillConfig(effective).Id;
+        return effective;
     }
 
     /// <summary>
@@ -297,11 +323,17 @@ public sealed partial class CombatService
     /// but the new swing starts when the one in flight would have ended: the milliseconds left, 0 when it is no such turn.
     /// Starting it at once let clicks alternating between two targets swing at click speed (inferred from the same pacing).
     /// </summary>
-    private int SwingTurnLeft(ActiveSkillCast? active, JsonElement row)
+    private int SwingTurnLeft(ActiveSkillCast? active, JsonElement row) => Math.Max(0, SwingLeft(active, row) - SwingJitterMs);
+
+    /// <summary>
+    /// The milliseconds until the swing in flight ends, where a new normal attack starts. The slack only lets its request in:
+    /// the key held down sends one every 200 ms, so starting it at once cut 150 ms off every swing (346 ms a swing became 200).
+    /// </summary>
+    private int SwingLeft(ActiveSkillCast? active, JsonElement row)
     {
         if (active is not { Cancelled: false } || !new SkillConfig(row).IsNormalAttack(_data) || !new SkillConfig(active.Row).IsNormalAttack(_data))
             return 0;
-        long left = active.StartMs + active.ChantMs + active.ActionMs - SwingJitterMs - Now;
+        long left = active.StartMs + active.ChantMs + active.ActionMs - Now;
         return left > 0 ? (int)Math.Min(left, int.MaxValue) : 0;
     }
 
@@ -312,8 +344,8 @@ public sealed partial class CombatService
         if (GameData.Int(row, "_iID") == PublicSkill("WorldTreeSkillId")) return true; // paid item skill, LC_ReviveHelper.
         // A Survivor Battle career owns the match skill set (TimedBattleService.Chicken), not the job tree.
         if (MatchSkillRule?.Invoke(s, (int)GameData.Int(row, "_iID")) is { } granted) return granted;
-        if (GameData.Int(row, "_iID") == _skills.NormalAttack(s.Progress!.Career)) return true;
-        return _skills.Level(s.Progress, (int)GameData.Int(row, "_iSkillID")) >= GameData.Int(row, "_iLevel");
+        if (new SkillConfig(row) is var skill && skill.IsNormalAttack(_data)) return _skills.MayCastAttack(s, skill);
+        return _skills.Level(s.Progress!, (int)GameData.Int(row, "_iSkillID")) >= GameData.Int(row, "_iLevel");
     }
 
     private MonsterUnit? FindMonster(long sceneId, long uid) => _world.Map(sceneId).Units.OfType<MonsterUnit>().FirstOrDefault(m => m.Uid == uid && !m.Dead);
@@ -415,6 +447,11 @@ public sealed partial class CombatService
             // beyond the skill's reach and area is not a point it could aim at (inferred), so the caster's is used.
             float aim = Math.Max(Math.Max(Range(row), askedRange), new SkillConfig(row).Range.FirstOrDefault(0) / 100f) + 1 + slack;
             if (req.TargetPos == null || Distance(origin, req.TargetPos) > aim) req.TargetPos = origin.Clone();
+            // A single-target row released this way hits the id the client names (SelectEnemies), and only a lock checks
+            // that id's distance. (inferred) One out of reach is not hit, and the cast stands: such a row can be pressed
+            // with a far target still selected. A row without a reach in its data says nothing to compare.
+            if (new SkillConfig(row).RangeType == SkillRelease.SingleTarget && aim > 1 + slack
+                && (monster?.Pos ?? enemyPlayer?.Position) is { } named && Distance(origin, named) > aim) req.TargetId = 0;
             return 0;
         }
         if (!_buffs.CanSeePosition(s, targetPosition)) return ErrorCodes.SkillTargetInvalid;
@@ -686,6 +723,11 @@ public sealed partial class CombatService
         if (s.SkillCast is not { } action) return;
         action.Cancelled = true;
         s.SkillCast = null;
+        // The client lets a move end a swing only from the show's m_fInterruptTime_move, well after its hit. Without this a
+        // step or a 31124 right after the hit, and a new swing, hits faster than the attack speed allows.
+        if (cause == SkillInterruptedInfo.Types.SkillInterruptType.Move && new SkillConfig(action.Row).IsNormalAttack(_data)
+            && SkillShow.MoveInterruptOffset(_data.SkillTemplate(new SkillConfig(action.Row).ScriptShow), action.ChantMs, action.ActionMs) is { } moveMs)
+            s.SwingLockUntilMs = action.StartMs + moveMs;
         s.WalkAllowance.Release(DateTime.UtcNow);
         await ToPlayerAndViewersAsync(s, SkillEnd, new SkillEndNotify
         {
