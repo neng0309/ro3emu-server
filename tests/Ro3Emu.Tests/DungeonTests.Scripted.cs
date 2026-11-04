@@ -218,12 +218,11 @@ public sealed partial class DungeonTests
         Assert.Equal(0, await Interact(alice, vortex, 5300030));
     }
 
-    private static readonly int[] RideWaypoints = [0, 4, 8, 13];
+    private static readonly int[] RideWaypoints = [4, 8, 13];
 
     private async Task SeatedOnTheDeniroAsync(BotClient alice, DungeonService.SceneActorUnit actor, int interaction, bool exitByButton)
     {
         long me = Session(alice).Role!.Id;
-        if (exitByButton) Service<IOptions<ServerOptions>>().Value.ScriptedScenePacePercent = 1000; // the put-down is 20 s away
         Assert.Equal(0, await Interact(alice, actor, interaction));
         var seat = await Next(alice, WorldInteractionService.Change, InteractChangeNtf.Parser,
             m => m.Uid == me && m.DataInfo.EType != InteractInfo.Types.EState.Idle);
@@ -237,15 +236,14 @@ public sealed partial class DungeonTests
             Assert.True(Service<WorldInteractionService>().IsSeatedOnSceneActor(Session(alice)));
             await alice.SendGameAsync(WorldInteractionService.Action, new UseInteractActionReq { ButtonId = 26 });
             Assert.Equal(0, (await Next(alice, WorldInteractionService.Action, UseInteractActionRes.Parser)).Result);
-            Service<IOptions<ServerOptions>>().Value.ScriptedScenePacePercent = 10;
         }
         var down = await Next(alice, WorldInteractionService.Change, InteractChangeNtf.Parser,
             m => m.Uid == me && m.DataInfo.EType == InteractInfo.Types.EState.Idle);
         Assert.False(down.Interrupt); // put down, not interrupted by leaving
     }
 
-    // The first ride (5300005, a vehicle gameplay status) seats the player on the Deniro, which puts them down by itself
-    // (inferred) or when the client's own exit button asks (VehicleSeatConfig 5300005 _kGameplayBtnId 26).
+    // The ride (5300005, a vehicle gameplay status) seats the player on the Deniro, which puts them down at the end of its
+    // route (inferred) or when the client's own exit button asks (VehicleSeatConfig 5300005 _kGameplayBtnId 26).
     [ClientDataTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -280,10 +278,10 @@ public sealed partial class DungeonTests
         (int Npc, int Interaction, int Buff)[] chain =
         [
             (5300041, 5300028, 5301401), // help Bobo up
-            (5300005, 5300005, 5365401), // try to ride the Deniro
+            (5300005, 5300008, 5365101), // try to ride the Deniro
             (5300055, 5300010, 5365201), // collect the fluorescent substance
             (5300005, 5300009, 5365301), // feed the Deniro
-            (5300005, 5300008, 5365101), // ride to the depths
+            (5300005, 5300005, 5365401), // ride to the depths
         ];
         for (int step = 0; step < chain.Length; step++)
         {
@@ -297,15 +295,15 @@ public sealed partial class DungeonTests
             if (step == 1)
                 // The kept Deniro got its buff in place (31104), without leaving and re-entering the view.
                 await Next(alice, BuffService.BuffUpdate, BuffUpdateNotify.Parser,
-                    n => n.UnitId == actor.Uid && n.Buffs.Any(b => b.ConfigId == 5365401));
+                    n => n.UnitId == actor.Uid && n.Buffs.Any(b => b.ConfigId == 5365101));
             await Beside(alice, actor.X, actor.Y, actor.Z);
             // The reverse dungeon's client reports the NPC's place (31089) before each interaction (LC_DAL_Interact.SyncNpcPos).
             await alice.SendGameAsync(WorldCoreService.TeleportObject, new ClientTeleportObject
             { TargetUid = actor.Uid, TargetPos = new Vec3 { X = actor.X, Y = actor.Y, Z = actor.Z } });
-            if (step != 1)
+            if (step != 4)
             {
                 Assert.Equal(0, await Interact(alice, actor, chain[step].Interaction));
-                // Only the first Ride has a vehicle status: the ride to the depths seats nobody.
+                // Only the ride has a vehicle status: the first try seats nobody.
                 Assert.False(Service<WorldInteractionService>().IsSeatedOnSceneActor(Session(alice)));
                 continue;
             }
@@ -316,28 +314,75 @@ public sealed partial class DungeonTests
             && APIErrorMsg.Parser.ParseFrom(e.Body).OriginMsgId == WorldCoreService.TeleportObject);
         var result = await Next(alice, DungeonService.Result, DungeonResNotify.Parser);
         Assert.Equal((DungeonRes)1, result.Res);
-        // The ride (inferred): the player was moved from the start of guide 36 to its end in forced positions.
+        // The ride (inferred): the server led the Deniro from the start of guide 36 to its end, leg by leg. A seated rider's client
+        // obeys only transType 3 for the vehicle it controls, and a forced position of the rider would shake the seat.
         var route = Service<WorldData>().Map(scene)!.GuidePaths[36];
-        var moves = alice.Inbox.Snapshot().Where(e => e.IsGame(GameAoiSink.MovementChange))
-            .Select(e => MovementChangeNtf.Parser.ParseFrom(e.Body)).Where(m => m.Uid == Session(alice).Role!.Id && m.MovementInfo?.Pos != null)
-            .Select(m => m.MovementInfo.Pos).ToList();
+        var carrierMoves = alice.Inbox.Snapshot().Where(e => e.IsGame(GameAoiSink.MovementChange))
+            .Select(e => MovementChangeNtf.Parser.ParseFrom(e.Body)).Where(m => m.Uid == deniro.Uid && m.MovementInfo?.Pos != null).ToList();
+        if (!exitByButton)
+        {
+            Assert.All(carrierMoves, m => Assert.Equal(MovementTransitionType.MoveTransServerControl, m.TransType));
+            Assert.DoesNotContain(alice.Inbox.Snapshot().Where(e => e.IsGame(GameAoiSink.MovementChange))
+                .Select(e => MovementChangeNtf.Parser.ParseFrom(e.Body)),
+                m => m.Uid == Session(alice).Role!.Id && m.TransType == MovementTransitionType.MoveTransResetPos
+                    && MonsterService.Distance(m.MovementInfo.Pos.X, m.MovementInfo.Pos.Z, route[4].X, route[4].Z) < 1.5f);
+        }
+        var moves = carrierMoves.Select(m => m.MovementInfo.Pos).ToList();
         int Reached(int waypoint) => moves.FindIndex(m => MonsterService.Distance(m.X, m.Z, route[waypoint].X, route[waypoint].Z) < 1.5f);
-        int[] passed = [.. RideWaypoints.Select(Reached)];
-        Assert.All(passed, i => Assert.True(i >= 0, "a waypoint was never reached"));
-        Assert.Equal(passed.Order(), passed); // in route order
-        // ... and the Deniro walked it too, ending where the route ends.
-        Assert.Contains(alice.Inbox.Snapshot().Where(e => e.IsGame(GameAoiSink.MovementChange))
-            .Select(e => MovementChangeNtf.Parser.ParseFrom(e.Body)).Where(m => m.Uid == deniro.Uid && m.MovementInfo?.Pos != null)
-            .Select(m => m.MovementInfo.Pos), m => MonsterService.Distance(m.X, m.Z, route[^1].X, route[^1].Z) < 1.5f);
+        if (!exitByButton)
+        {
+            int[] passed = [.. RideWaypoints.Select(Reached)];
+            Assert.All(passed, i => Assert.True(i >= 0, "a waypoint was never reached"));
+            Assert.Equal(passed.Order(), passed); // in route order
+        }
+        if (!exitByButton) Assert.Contains(moves, m => MonsterService.Distance(m.X, m.Z, route[^1].X, route[^1].Z) < 1.5f); // to the end
         var end = Service<WorldData>().Map(scene)!.Points[31]; // the ride ends in the end region
         Assert.True(MonsterService.Distance(Session(alice).Position.X, Session(alice).Position.Z, end.X, end.Z) < 1);
         await StoryMovesOn(alice, 10104300, 10104310);
+
+        // The next quest stays hidden in this scene (no _iDungeonID), so the server moves the player on into 1000401.
+        Assert.Equal(0, (await Next(alice, DungeonService.Enter, EnterDungeonRsp.Parser)).Result);
+        await Load(alice, 1000401);
+    }
+
+    // After Maya's nest the story goes on on the field (10104320 tracks map 10540), and its quest stays hidden in the scene.
+    [ClientDataFact]
+    public async Task MayasNestReturnsThePlayerToTheFieldAfterItsClear()
+    {
+        const long scene = 1000401;
+        await using var alice = await InWorld("Alice");
+        await Gm(alice, "!lvl 99");
+        Assert.Equal(0, await Enter(alice, new EnterDungeonReq { SceneEntry = scene }));
+        long instance = await Load(alice, scene);
+        using var left = alice.Inbox.Expect(e => e.IsGame(DungeonService.Leave));
+        var plan = Session(alice).DungeonAttempt!.Plan;
+        for (int wave = 0; wave < plan.Waves.Count; wave++)
+        {
+            var step = plan.Waves[wave].Step!;
+            var begun = await Stage(alice, wave + 1, quest: step.Quest);
+            Assert.Equal([0L, 1L], begun.Vars.Single(v => v.VarId == 10003).Vi64); // a new step starts at (0/1)
+            await ActorsIn(alice, step.Actors.Count);
+            if (plan.Waves[wave].Spawns.Count > 0)
+                foreach (var monster in await WaveIn(instance, plan.Waves[wave].Spawns.Count)) await Kill(alice, monster);
+            if (step.Complete.Count > 0)
+            {
+                await Gm(alice, "!actors use");
+                // "Open the treasured chest" reads (1/1) once it is open, and so does each step before it.
+                await Next(alice, DungeonService.BaseInfo, DungeonBaseInfoNotify.Parser,
+                    n => n.Vars.SingleOrDefault(v => v.VarId == 10003)?.Vi64 is [var done, var total] && done == total);
+            }
+        }
+        Assert.Equal((DungeonRes)1, (await Next(alice, DungeonService.Result, DungeonResNotify.Parser)).Res);
+        var leave = await left.WaitAsync(TimeSpan.FromSeconds(DungeonService.PlaneExitSeconds + 10));
+        Assert.Equal(0, LeaveDungeonRsp.Parser.ParseFrom(leave.Body).Result);
     }
 
     [ClientDataFact]
     public async Task LouiesGamePlaysItsStoriesAndOnlyKatiesBellWins()
     {
         const long scene = 3120402;
+        // A roll of 0 hides Katie's ring under the west Bell (point 29) instead of where the data lists it (31).
+        Service<DungeonService>().ShuffleRoll = _ => 0;
         await using var alice = await InWorld("Alice");
         await Gm(alice, "!quest accept 10106270"); // The Mysterious Thief Gang: [101018, 3120402, 1]
         Assert.Equal(0, await Enter(alice, new EnterDungeonReq { SceneEntry = scene }));
@@ -352,6 +397,8 @@ public sealed partial class DungeonTests
         var actors = await ActorsIn(alice, 6);
         Assert.Equal(3, actors.Count(a => a.NpcId == 400137)); // the bells
         var katie = actors.Single(a => a.NpcId == 400134);
+        Assert.Equal(29L, katie.Point);
+        Assert.Equal([29L, 30L, 31L], actors.Where(a => a.NpcId == 400137).Select(a => a.Point).Order()); // the bells stay
         var wrong = actors.Single(a => a.NpcId == 400135);
         Assert.Equal(2, katie.EntityType); // TriggerNpcInteract looks the ring up as an NPC by its config id
         // Walking up opens the ring's dialogue (auto interaction 20003001, answered so the client runs action 53).
@@ -423,6 +470,9 @@ public sealed partial class DungeonTests
     public async Task LouiesShellGameTakesTwoRightGuessesWhileWrongOnesChangeNothing()
     {
         const long scene = 3120703;
+        // A roll of 0 hides Katie under the west Bell (29) in round 1 and the centre one (30) in round 2, not where the
+        // data lists her (31, then 29).
+        Service<DungeonService>().ShuffleRoll = _ => 0;
         await using var alice = await InWorld("Alice");
         await Gm(alice, "!quest accept 205170"); // A New Round: [101018, 3120703, 1]
         Assert.Equal(0, await Enter(alice, new EnterDungeonReq { SceneEntry = scene }));
@@ -442,14 +492,14 @@ public sealed partial class DungeonTests
         await Task.Delay(200);
         Assert.Equal(1, Session(alice).DungeonAttempt!.Wave + 1);
         var katie = round1.Single(a => a.NpcId == 400134);
-        Assert.Equal(31L, katie.Point); // straight ahead of Katie's place
+        Assert.Equal(29L, katie.Point); // the drawn Bell
         await Beside(alice, katie.X, katie.Y, katie.Z);
         Assert.Equal(0, await Interact(alice, katie, 20003001));
         Assert.Equal(0, await Interact(alice, katie, 5300040)); // message 11: right
 
-        // Round 2: the cat has moved; the Bells, Louie and Martha stay, the rings change places.
+        // Round 2: the cat has moved; the Bells, Louie and Martha stay, the rings are drawn again.
         await Stage(alice, 2, quest: 1);
-        var round2 = await ActorsWhen(alice, shown => shown.Count == 8 && shown.Any(a => a.NpcId == 400134 && a.Point == 29));
+        var round2 = await ActorsWhen(alice, shown => shown.Count == 8 && shown.Any(a => a.NpcId == 400134 && a.Point == 30));
         Assert.All(round1.Where(a => a.NpcId is 400131 or 400132 or 400138), kept => Assert.Contains(kept, round2));
         Assert.False(Session(alice).DungeonAttempt!.Settled);
         var stale = round2.Single(a => a.NpcId == 400135);
@@ -473,6 +523,7 @@ public sealed partial class DungeonTests
     {
         const long scene = 3120703;
         Service<IOptions<ServerOptions>>().Value.ScriptedScenePacePercent = 10;
+        Service<DungeonService>().ShuffleRoll = bound => bound - 1; // the listed layout: Katie at 31, then at 29
         await using var alice = await InWorld("Alice");
         await Gm(alice, "!quest accept 205170");
         Assert.Equal(0, await Enter(alice, new EnterDungeonReq { SceneEntry = scene }));
@@ -599,6 +650,56 @@ public sealed partial class DungeonTests
             Assert.Fail("the walk off the nav was snapped back");
         }
         finally { options.WalkCheck = "log"; }
+    }
+
+    // Louie's bell games (inferred): each round hides Katie's ring (400134) under a random Bell. The rings' places are
+    // drawn among the points the step lists for them; the Bells, Louie and Martha keep theirs.
+    public static TheoryData<long, int> LouiesBellRounds() => new() { { 3120402, 1 }, { 3120703, 0 }, { 3120703, 1 } };
+
+    private static ReconstructedDungeons.ScriptedStep BellRound(long scene, int step) =>
+        new ReconstructedDungeons(Options.Create(new ServerOptions())).Scripted(scene)!.Steps[step];
+
+    [Theory]
+    [MemberData(nameof(LouiesBellRounds))]
+    public void LouiesBellRoundsShuffleOnlyTheRings(long scene, int index)
+    {
+        var step = BellRound(scene, index);
+        Assert.Equal([400134, 400135, 400136], step.Shuffle.Order());
+        // A roll that keeps every place (Fisher-Yates swapping each slot with itself) shows the listed layout.
+        Assert.Equal(step.Actors, step.Placed(bound => bound - 1));
+        foreach (var placed in new[] { step.Placed(_ => 0), step.Placed(new Random(7).Next) })
+        {
+            // Every actor outside the shuffle, the Bells first of all, stays as listed.
+            Assert.Equal(step.Actors.Where(a => !step.Shuffle.Contains(a.NpcId)), placed.Where(a => !step.Shuffle.Contains(a.NpcId)));
+            // The rings take exactly the listed ring places, and each one stands on a Bell: the reaction's effect goes on the
+            // Bell at the point of the ring the player used (DungeonService.RespondAsync).
+            var rings = placed.Where(a => step.Shuffle.Contains(a.NpcId)).ToArray();
+            Assert.Equal(step.Actors.Where(a => step.Shuffle.Contains(a.NpcId)).Select(a => a.Point).Order(), rings.Select(a => a.Point).Order());
+            Assert.All(rings, ring => Assert.Contains(placed, a => a.NpcId is 400137 or 400138 && a.Point == ring.Point));
+        }
+        // A roll of 0 moves Katie off the Bell the data lists her under.
+        long listed = step.Actors.Single(a => a.NpcId == 400134).Point;
+        Assert.NotEqual(listed, step.Placed(_ => 0).Single(a => a.NpcId == 400134).Point);
+        // The right guess is still ring 400134's message 11 wherever it stands; the others' 12 is still ignored.
+        Assert.Equal([11L], step.Complete.Where(t => t.Kind == ReconstructedDungeons.TriggerKind.Message).Select(t => t.Id));
+        Assert.Equal([12L], step.Ignore.Select(t => t.Id));
+    }
+
+    [Theory]
+    [MemberData(nameof(LouiesBellRounds))]
+    public void KatieHidesUnderEveryBellAcrossRounds(long scene, int index)
+    {
+        var step = BellRound(scene, index);
+        var hiding = Enumerable.Range(0, 200).Select(seed => step.Placed(new Random(seed).Next).Single(a => a.NpcId == 400134).Point);
+        Assert.Equal([29L, 30L, 31L], hiding.Distinct().Order());
+    }
+
+    [Fact]
+    public void AStepWithoutAShuffleKeepsItsActorsWhereTheyAreListed()
+    {
+        var step = BellRound(3120402, 3); // the Professor's instrument
+        Assert.Empty(step.Shuffle);
+        Assert.Same(step.Actors, step.Placed(_ => 0));
     }
 
     [ClientDataFact]

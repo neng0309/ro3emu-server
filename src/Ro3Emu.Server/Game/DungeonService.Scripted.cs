@@ -1,4 +1,5 @@
 using Romsg;
+using Ro3Emu.Server.Data.Config;
 using Ro3Emu.Server.Data;
 using Ro3Emu.Server.Maps;
 using Kind = Ro3Emu.Server.Game.ReconstructedDungeons.TriggerKind;
@@ -29,6 +30,9 @@ public sealed partial class DungeonService
     private long _sceneActorSerial;
     private long _sceneActorBuffGuid = 1L << 56;
 
+    /// <summary>The draw of a step's shuffled actors (ScriptedStep.Shuffle): a uniform integer below its bound; tests pin it.</summary>
+    internal Func<int, int> ShuffleRoll { get; set; } = bound => Random.Shared.Next(bound);
+
     /// <summary>
     /// A scene actor: NPCConfig _iNPCType 1 is created by the client as a monster unit (entity type 1, with its HP
     /// and level so the head bar renders), 2 as an NPC (entity type 2, which TriggerNpcInteract looks up by config id).
@@ -44,6 +48,9 @@ public sealed partial class DungeonService
         public MonsterTemplate? Template { get; init; }
         public long BornMs { get; init; }
         public List<BuffInfo> Buffs { get; } = [];
+
+        /// <summary>Attribute 113 of an actor that can carry a rider: its own walking speed in cm/s, which the client moves it at.</summary>
+        public long CarrySpeed { get; init; }
 
         public override EntityBase Entity()
         {
@@ -65,6 +72,7 @@ public sealed partial class DungeonService
                 foreach (var (idx, value) in new (long, long)[] { (101, t.MaxHp), (2000, t.MaxHp), (2002, t.Level), (113, t.SpeedCm),
                              (102, t.MaxSp), (2001, t.MaxSp) })
                     entity.Property.Add(new AoIProperty { Idx = idx, Data = value, BaseData = value });
+            if (CarrySpeed > 0) entity.Property.Add(new AoIProperty { Idx = 113, Data = CarrySpeed, BaseData = CarrySpeed });
             if (Buffs.Count > 0) entity.BuffData = new AoIBuffInfo { AddBuffs = { Buffs.Select(b => b.Clone()) } };
             return entity;
         }
@@ -80,7 +88,7 @@ public sealed partial class DungeonService
         a.StepHeld = a.StepHoldOver = false;
         // A fight-only step has no client event to wait for: its kills complete it.
         a.StepDone = step.Complete.Count == 0;
-        await SyncSceneActorsAsync(a, step.Actors);
+        await SyncSceneActorsAsync(a, step.Placed(ShuffleRoll));
         await SyncCompanionsAsync(a, step.Companions);
         a.StepGeneration++;
         if (step.Seek is { } seek) StartSeek(a, seek);
@@ -130,6 +138,8 @@ public sealed partial class DungeonService
                 InstanceId = a.Room.Id, X = at.X + spec.Dx, Y = at.Y, Z = at.Z + spec.Dz, Face = at.Face, NpcId = spec.NpcId, Point = spec.Point,
                 EntityType = type, Camp = GameData.Int(row, "_iCamp"), Name = type == 2 ? _data.TextOf(row, "_kName") : "",
                 Template = type == 1 ? _monsters.Template(spec.NpcId) : null, BornMs = MonsterService.NowMs,
+                CarrySpeed = _data.Row("VehicleConfig", spec.NpcId) != null && NPCConfig.Get(_data, spec.NpcId) is { } carrier
+                    && UnitConfig.Get(_data, carrier.UnitId) is { } carrierUnit ? (long)carrierUnit.Speed : 0,
             };
             unit.Buffs.AddRange(spec.Buffs.Select(id => ActorBuff(unit, id)));
             if (await _instances.AddPropAsync(a.Room, unit)) a.SceneActors.Add(unit);
@@ -338,6 +348,8 @@ public sealed partial class DungeonService
             }
         }
         a.StepDone = true;
+        a.GoalFullWave = a.Wave;
+        if (GoalParams(a) != null) await BroadcastAsync(a, BaseInfo, Snapshot(a));
         _log.LogInformation("Scripted scene {Scene} step {Step} '{Stage}' completed by {Role} ({Events})",
             a.Plan.SceneEntry, a.Wave + 1, step.Stage, s.Role?.Id, string.Join(", ", events));
         int hold = await RespondAsync(a, step.React, step.React?.Complete, used);

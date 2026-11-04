@@ -61,6 +61,7 @@
     },
     "1000301": {
       "name": "Ant Queen's Nest: Bobo and the Deniro",
+      "continuesTo": 1000401,
       "confidence": "medium",
       "evidence": [
         "DungeonQuestConfig 5300011-5300015: 1 Help Bobo up, 2 Ride the Deniro, 3 Collect the fluorescent substance, 4 Feed the Deniro, 5 Ride the Deniro to the depths of the Ant Hell.",
@@ -70,7 +71,7 @@
       ],
       "guessed": [
         "Bobo stays where he was helped up for the rest of the scene; patrol 28 (his short walk) is not animated.",
-        "Step 2 seats the player on the Deniro (NPCInteractConfig 5300005, vehicle status 3, VehicleSeatConfig 5300005) and the Deniro puts them down 2 s later or when the exit button (action 5004) asks: the quest that follows ('Find a way to earn Deniro's Faith') says the first ride fails, but nothing says how long the rider stays on.",
+        "Step 2 is 'Try to Ride' (5300008) and step 5 the ride (5300005, vehicle status 3, VehicleSeatConfig 5300005), by their buffs 53651-53654 in step order and the client's 'Try riding the Deniro again' before step 5. The client seats a driver and hands it the Deniro, but gives no way to steer it here, so the server leads it down guide 36 with transType 3, and the rider leaves at the end or by the exit button.",
         "Collecting the fluorescent substance grants no item: no item is named by the client data.",
         "The ride to the depths walks guide 36 (down the ramp through regions 38, 37 and 31): the Deniro goes along its 14 points at its UnitConfig speed (5.25 m/s) and the player is moved with it in 100 ms forced-position steps, ending at region 31's centre. The client has no ride rule: the speed, the missing mount and the camera prefab mianstorybingyicamera (not played) are guesses.",
         "Step 5's second Ride (5300008, no gameplay status) does not seat the player on the Deniro: the player slides beside it."
@@ -92,10 +93,10 @@
           "stage": "Try to ride the Deniro",
           "actors": [
             { "npc": 5300041, "point": 23, "why": "Bobo, helped up" },
-            { "npc": 5300005, "point": 29, "buffs": [5365401], "why": "buff group 53654 opens 'Ride' (5300005)" }
+            { "npc": 5300005, "point": 29, "buffs": [5365101], "why": "buff group 53651 opens 'Try to Ride' (5300008), skill 5362901: a 2367 ms animation with no vehicle status" }
           ],
           "complete": [
-            { "message": 5300005, "why": "interaction 5300005 'Ride' sends dungeon message 5300005" }
+            { "message": 5300008, "why": "interaction 5300008 'Try to Ride' sends dungeon message 5300008" }
           ]
         },
         {
@@ -126,10 +127,10 @@
           "stage": "Ride the Deniro to the depths of the Ant Hell",
           "actors": [
             { "npc": 5300041, "point": 23, "why": "Bobo" },
-            { "npc": 5300005, "point": 29, "buffs": [5365101], "why": "buff group 53651 opens the second 'Ride' (5300008)" }
+            { "npc": 5300005, "point": 29, "buffs": [5365401], "why": "buff group 53654 opens 'Ride' (5300005), vehicle status 3: the player sits on the Deniro" }
           ],
           "complete": [
-            { "message": 5300008, "why": "interaction 5300008 'Ride' sends dungeon message 5300008" },
+            { "message": 5300005, "why": "interaction 5300005 'Ride' sends dungeon message 5300005" },
             { "region": 31, "why": "the 'end region' (regionType 2) where the riding guide 36 ends" }
           ],
           "after": { "ride": 36, "teleport": 31, "why": "the Deniro carries the player down guide 36 (the riding route) at its own walking speed, then the player stands at the end region" }
@@ -138,6 +139,7 @@
     },
     "1000401": {
       "name": "Maya's nest: Maya, the Professor in the ant egg and the treasure",
+      "leavesAfterClear": true,
       "confidence": "medium",
       "evidence": ["DungeonQuestConfig 5300016-5300020: 1 'Encounter Maya' [5,0,1] 'Defeat Maya'; 2 'Find the Professor' 'Venture deeper into the cave to find the Professor'; 3 'Free the Ant Egg' 'Rescue the Professor from the ant egg'; 4 'Help the Professor Up' 'Help the Weak Professor walk'; 5 \"Maya's Secret Treasure\" 'Open the treasured chest'. Tasks 105103 and 10104310 'Venture Deeper into the Ant Queen's Nest': 'Enter Maya's Nest and rescue the Professor.'", "Editor sc_plot_yhcx_003_dg01: points 21 蚁后刷怪点 (ant queen spawn), 26 教授刷新点 (professor spawn), 32 教授卵刷新点 (professor egg spawn), 34 宝箱刷怪点 (treasure chest spawn); guide 25 蚁卵引导点 (ant egg guide) leads from the born point toward the eggs; dialogue regions 28-30 (regionType 1, client) lie along the way, region 28 about 10 m before point 32.", "NPCInteractConfig 5300021 'Free the Ant Egg' (skill 5362201) on 5300051 and 5300056 sends dungeon message 5300022; 5300022 'Help the Professor Up' (skill 5362301: 'Help the fallen Professor to their feet') on 5300026 Professor sends 5300023; 5300023 'Open' (skill 5362401: 'Open the Treasure in Maya's Nest') on 5300052 Precious Treasure Chest sends 5300024. All three are gated by LC_ConditionList 7100022-7100024: [1004, 53014] CheckHaveBuff group 53014, the gate 1000301's 'Rescue Bobo' uses (BuffConfig 5301401).", "5300056 (unit 5300017, next to the Ant Egg 5300036 unit 5300014) is the egg with the Professor; 5300051 offers the same interaction on unit 70010, the invisible helper model."],
       "guessed": ["Stage 2 completes within 10 m of the egg point 32 (where dialogue region 28 begins); the original likely used a dialogue region, which the client handles itself.", "The egg holding the Professor is 5300056 (its model is next to the Ant Egg model); 5300051 would show nothing.", "Each step gives its actor buff 5301401 (group 53014) to open its interaction, as in 1000301; the original set the buff from its script.", "The chest's _iNormalDrop 330052 is not dropped: the engine gives no loot; the dungeon's own settlement rewards stand."],
@@ -456,7 +458,7 @@
       ],
       "guessed": [
         "The bells stand at group 28 (points 29-31), where story 1014 reveals the gang; the shuffle animation is not reproduced.",
-        "Katie's ring (400134, message 11) is under the bell at x 60 (point 31), where Katie stands in both stories; which of 400135/400136 is Louie's or Martha's bell does not matter (both send 12).",
+        "Which bell hides Katie's ring (400134, message 11) is drawn when the round begins: the three rings swap places at random (step 'shuffle'), so the guess is a real one. Both stories show Katie at x 60 (point 31), the place the step lists her ring at; which of 400135/400136 is Louie's or Martha's bell does not matter (both send 12).",
         "A wrong guess (message 12) changes nothing and the player may choose again; the original consequence ('join us as our lowest-ranking lackey') is not recovered.",
         "Retrieving the instrument: NPC 400046 Strange Device (unit 100210 '教授的奇怪机器', interaction 40004601 'Pick up') at mark point 37, where guide point 38 leads; walking within 4 m also completes it."
       ],
@@ -480,6 +482,7 @@
             { "npc": 400135, "point": 30, "why": "ring: 'Choose this one!' sends message 12" },
             { "npc": 400134, "point": 31, "why": "Katie's ring: 'Choose this one!' sends message 11" }
           ],
+          "shuffle": { "npcs": [400134, 400135, 400136], "why": "the rings' places (29-31) are drawn when the round begins, so any bell may hide Katie (inferred); the bells stay" },
           "complete": [
             { "message": 11, "why": "the one choice that sends a different message: interaction 5300040 of ring 400134" }
           ],
@@ -544,7 +547,7 @@
         "When Louis's lines go out, from what they say: round 1 opens with 'Let's start the game!' and then 'Guess which Bell my cat is hiding in!', each when the previous one's _iTime has run out; round 2 opens with the second only; a wrong guess answers 'Sorry, wrong guess!'; a right one 'Congratulations ...' in round 1 and 'Darn ...' in round 2, and the next round (or the settlement) waits until that line's _iTime has run out. They go out as 1022 with Louie's uid, as Moonlight Flower's do.",
         "The right/wrong effects (buffs 5402101 SXGD_RIGHT, 5402201 SXGD_WRONG: their sound and effects play when the buff starts) are put on the Bell under the ring the player chose; the Bells of the next round drop them. Not checked in the live client.",
         "The bubbles 5310019-5310033 are not sent: which unit says which, and when, is not in the client.",
-        "Katie hides under the Bell straight ahead of where she stands (point 31, east) in round 1 and moves to the west Bell (point 29) in round 2; the shuffle is not animated. Louie and Martha watch from group 24; Katie, hidden, is not shown.",
+        "Which Bell Katie hides under is drawn at the start of each round: the three rings swap places at random (step 'shuffle'). The steps list her under the Bell straight ahead of where she stands (point 31, east) in round 1 and under the west Bell (point 29) in round 2, which is only the layout the draw starts from; the shuffle is not animated. Louie and Martha watch from group 24; Katie, hidden, is not shown.",
         "The Bells are 400138, the second Bell row (the Culvert uses 400137), at group 28 like the Culvert's; the rings stand on them.",
         "Marks 33-35 and 37 are not used: the Culvert's mark 37 was the instrument, and this scene has no second quest."
       ],
@@ -562,6 +565,7 @@
             { "npc": 400135, "point": 30, "why": "ring: 'Choose this one!' sends message 12" },
             { "npc": 400134, "point": 31, "why": "Katie's ring: 'Choose this one!' sends message 11" }
           ],
+          "shuffle": { "npcs": [400134, 400135, 400136], "why": "the rings' places (29-31) are drawn when the round begins (inferred); the Bells, Louie and Martha stay" },
           "complete": [
             { "message": 11, "why": "the one choice that sends a different message: interaction 5300040 of ring 400134" }
           ],
@@ -589,6 +593,7 @@
             { "npc": 400136, "point": 30, "why": "ring: message 12" },
             { "npc": 400135, "point": 31, "why": "ring: message 12" }
           ],
+          "shuffle": { "npcs": [400134, 400135, 400136], "why": "the cat moves: the rings' places are drawn again for round 2 (inferred)" },
           "complete": [
             { "message": 11, "why": "ring 400134 again: 'Darn, you got it right again! I give up.'" }
           ],

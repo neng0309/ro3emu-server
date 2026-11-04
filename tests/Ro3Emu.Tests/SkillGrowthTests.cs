@@ -102,8 +102,8 @@ public sealed class SkillGrowthTests : IAsyncLifetime
         await again.SendGameAsync(1023, new PlayerAssetReq { AssetType = { 5 } });
         // The career's own normal attack takes the slot: without it a Swordman has no attack on the bar.
         var swordman = await Next(again, SkillService.SkillDataSync, DBSkillDataIncrement.Parser,
-            m => m.SyncAllMark && m.CurrentAtkSkillId == 1100001);
-        Assert.Equal(1100001, swordman.SkillWheel.All.WhellSkills[1].SkillConfigId);
+            m => m.SyncAllMark && m.CurrentAtkSkillId == 1001001);
+        Assert.Equal(1001001, swordman.SkillWheel.All.WhellSkills[1].SkillConfigId);
         Assert.DoesNotContain(swordman.SkillWheel.All.WhellSkills.Values, slot => slot.SkillConfigId == 1000001);
     }
 
@@ -160,10 +160,10 @@ public sealed class SkillGrowthTests : IAsyncLifetime
             await Gm("sword", "!job 1100");
             await sword.SendGameAsync(1023, new PlayerAssetReq { AssetType = { 5 } });
             var swordman = await Next(sword, SkillService.SkillDataSync, DBSkillDataIncrement.Parser,
-                m => m.SyncAllMark && m.CurrentAtkSkillId == 1100001);
+                m => m.SyncAllMark && m.CurrentAtkSkillId == 1001001);
             Assert.Contains(Cell, swordman.SkillList.All.Value);
             Assert.Equal(1, swordman.SkillAssignPlans.All.Value[0].SkillAssigns[Cell].SkillLevel);
-            Assert.Equal(1100001, swordman.SkillWheel.All.WhellSkills[1].SkillConfigId);
+            Assert.Equal(1001001, swordman.SkillWheel.All.WhellSkills[1].SkillConfigId);
 
             Assert.Equal(0, await Load(sword, SkillLoadOperation.SkillLoadOpLoad, 1, SwordSmash));
             Assert.Equal(0, await Load(sword, SkillLoadOperation.SkillLoadOpUnload, 0, Attack));
@@ -181,7 +181,7 @@ public sealed class SkillGrowthTests : IAsyncLifetime
         await using (var again = await InWorld("Sword", create: false))
         {
             var removed = await Next(again, SkillService.SkillDataSync, DBSkillDataIncrement.Parser);
-            Assert.DoesNotContain(removed.SkillWheel.All.WhellSkills.Values, slot => slot.SkillConfigId == 1100001);
+            Assert.DoesNotContain(removed.SkillWheel.All.WhellSkills.Values, slot => slot.SkillConfigId == 1001001);
             Assert.Contains(Cell, removed.SkillList.All.Value);
             Assert.All(removed.SkillAssignPlans.All.Value, plan => Assert.Equal(1, plan.SkillAssigns[Cell].SkillLevel));
             // Dragged from the cell, it shows as the career's own attack; moving it keeps one copy on the bar.
@@ -190,8 +190,8 @@ public sealed class SkillGrowthTests : IAsyncLifetime
         }
         await using var last = await InWorld("Sword", create: false);
         var restored = await Next(last, SkillService.SkillDataSync, DBSkillDataIncrement.Parser);
-        Assert.Equal(1100001, restored.SkillWheel.All.WhellSkills[3].SkillConfigId);
-        Assert.Single(restored.SkillWheel.All.WhellSkills.Values, slot => slot.SkillConfigId == 1100001);
+        Assert.Equal(1001001, restored.SkillWheel.All.WhellSkills[3].SkillConfigId);
+        Assert.Single(restored.SkillWheel.All.WhellSkills.Values, slot => slot.SkillConfigId == 1001001);
         // The client names the slot by the row it shows (11000), not the cell's stored 10010.
         Assert.Equal(0, await Load(last, SkillLoadOperation.SkillLoadOpLoad, 0, Cell));
         Assert.Equal(0, await Load(last, SkillLoadOperation.SkillLoadOpUnload, 0, Attack));
@@ -223,7 +223,7 @@ public sealed class SkillGrowthTests : IAsyncLifetime
     [ClientDataFact]
     public async Task TheBarStaysEditableAfterTheLearnAllGmCommand()
     {
-        const int Attack = 11000, Bash = 11001, Provoke = 11002, Magnum = 11004, Other = 11005, FirstAid = 10003;
+        const int Bash = 11001, Provoke = 11002, Magnum = 11004, Other = 11005, FirstAid = 10003;
         var skills = _app.Services.GetRequiredService<SkillService>();
         (int, int) Max(int group) => (group, skills.MaxLevel(group));
         int Row(int group) => skills.RealId(group, skills.MaxLevel(group));
@@ -253,7 +253,7 @@ public sealed class SkillGrowthTests : IAsyncLifetime
         {
             var login = await Next(sword, SkillService.SkillDataSync, DBSkillDataIncrement.Parser, m => m.SyncAllMark);
             var wheel = login.SkillWheel.All.WhellSkills;
-            Assert.Equal(skills.RealId(Attack, 1), wheel[1].SkillConfigId);
+            Assert.Equal(1001001, wheel[1].SkillConfigId); // JobAttackConfig for job 1100
             Assert.Equal(Row(Bash), wheel[3].SkillConfigId);
             Assert.False(wheel.ContainsKey(4));
             Assert.Equal(Row(Other), wheel[5].SkillConfigId);
@@ -314,6 +314,55 @@ public sealed class SkillGrowthTests : IAsyncLifetime
         Assert.Single(bar.Values, slot => slot.SkillConfigId == skills.RealId(Attack, 1));
     }
 
+    // A Warlock's Sight refund came back Parameter and a switch to a build without Sight 333 (prerequisite). Sight Sprout
+    // (a Wizard's, _iInitialLevel 1, _kPreSkillRequired Sight 1) is free; it is SkillConfig's only such row.
+    [ClientDataFact]
+    public async Task AWarlockRefundsSightAndSwitchesToABuildWithoutIt()
+    {
+        const int Sight = 12002, Sprout = 12110, FireBolt = 12004, FireBall = 12012, FireWall = 12010,
+            Sightrasher = 12101, MeteorStorm = 12106, DestructiveFlame = 12311;
+        var skills = _app.Services.GetRequiredService<SkillService>();
+        await using var alice = await InWorld("Alice");
+        await Gm("alice", "!lvl 99");
+        await Gm("alice", "!job 2400");
+        var session = Session(alice);
+        async Task<int> Update(int plan, params (int Group, int Level)[] levels)
+        {
+            var request = new SkillGrowthSkillPlanUpdateReq { Plan = plan };
+            foreach (var (group, level) in levels) request.LevelUpList[group] = new SkillData { SkillId = group, SkillLevel = level };
+            await alice.SendGameAsync(SkillService.PlanUpdate, request);
+            return (await Next(alice, SkillService.PlanUpdate, SkillGrowthSkillPlanUpdateResp.Parser)).Result;
+        }
+
+        // A role that never took Sight can spend: its free Sprout holds nothing up.
+        Assert.Equal(0, await Update(0, (FireBolt, 5), (FireBall, 5)));
+        Assert.Equal(0, await Update(0, (Sight, 1), (FireWall, 1), (Sightrasher, 5), (MeteorStorm, 1), (DestructiveFlame, 1)));
+
+        // LC_SkillGrowthHelper.LocalMinusSkillLevel: Sight and all that depends on it, Sprout included, at 0.
+        Assert.Equal(0, await Update(0, (Sight, 0), (Sprout, 0), (FireWall, 0), (Sightrasher, 0), (MeteorStorm, 0), (DestructiveFlame, 0)));
+        var plan0 = skills.Build(session).SkillAssignPlans[0].SkillAssigns;
+        Assert.Equal(0, plan0[Sight].SkillLevel);
+        Assert.Equal(0, plan0[DestructiveFlame].SkillLevel);
+        Assert.Equal(1, plan0[Sprout].SkillLevel);
+        Assert.Equal(5, plan0[FireBall].SkillLevel);
+        Assert.Equal(1, skills.Level(session.Progress!, Sprout));
+
+        // A paid level still needs its prerequisite.
+        Assert.Equal(ErrorCodes.SkillPrerequisite, await Update(0, (FireWall, 1)));
+
+        Assert.Equal(0, await Update(0, (Sight, 1), (FireWall, 1)));
+        await alice.SendGameAsync(SkillService.SwitchPlan, new SwitchPlanReq { Plan = 1 });
+        Assert.Equal(0, (await Next(alice, SkillService.SwitchPlan, SwitchPlanResp.Parser)).Result);
+        Assert.Equal(1, session.SkillPlans!.CurrentPlanIndex);
+        Assert.Equal(1, skills.Level(session.Progress!, Sprout));
+        Assert.Equal(0, skills.Level(session.Progress!, Sight));
+        Assert.Equal(0, await Update(1, (FireBolt, 1)));
+
+        // The reset request leaves Sprout free and Sight at 0 as well.
+        await alice.SendGameAsync(SkillService.SkillReset, new SkillResetReq { Plan = 0 });
+        Assert.Equal(0, (await Next(alice, SkillService.SkillReset, SkillResetResp.Parser)).Result);
+    }
+
     [ClientDataFact]
     public async Task AllocationAndDependentRefundAreAtomic()
     {
@@ -329,7 +378,7 @@ public sealed class SkillGrowthTests : IAsyncLifetime
 
         await Gm("alice", "!job 1100");
         await Next(alice, SkillService.SkillDataSync, DBSkillDataIncrement.Parser,
-            m => !m.SyncAllMark && m.CurrentAtkSkillId == 1100001);
+            m => !m.SyncAllMark && m.CurrentAtkSkillId == 1001001);
         var learn = new SkillGrowthSkillPlanUpdateReq { Plan = 0 };
         learn.LevelUpList[11001] = new SkillData { SkillId = 11001, SkillLevel = 5 };
         learn.LevelUpList[11002] = new SkillData { SkillId = 11002, SkillLevel = 1 };
@@ -367,7 +416,7 @@ public sealed class SkillGrowthTests : IAsyncLifetime
             await Next(alice, SkillService.SkillDataSync, DBSkillDataIncrement.Parser);
             await Gm("alice", "!job 1100");
             await Next(alice, SkillService.SkillDataSync, DBSkillDataIncrement.Parser,
-                m => !m.SyncAllMark && m.CurrentAtkSkillId == 1100001);
+                m => !m.SyncAllMark && m.CurrentAtkSkillId == 1001001);
             var learn = new SkillGrowthSkillPlanUpdateReq { Plan = 0 };
             learn.LevelUpList[11001] = new SkillData { SkillLevel = 3 };
             await alice.SendGameAsync(SkillService.PlanUpdate, learn);

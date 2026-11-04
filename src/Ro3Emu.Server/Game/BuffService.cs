@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Romsg;
 using Ro3Emu.Server.Data;
+using Ro3Emu.Server.Data.Config;
 using Ro3Emu.Server.Maps;
 
 namespace Ro3Emu.Server.Game;
@@ -34,6 +35,9 @@ public sealed partial class BuffService : IGameTicker
 
     /// <summary>Subscribers recompute effective skill parameters/slots after a buff changes.</summary>
     public List<Func<GameSession, Task>> Changed { get; } = [];
+
+    /// <summary>A player's control state or forbidden actions changed (CombatService ends a cast they forbid).</summary>
+    internal Func<GameSession, Task>? ControlChanged { get; set; }
 
     /// <summary>The applier's changes to a buff's _kChangeAttri pairs before piles (TalentProcs: talent buff attributes).</summary>
     internal Func<long, JsonElement, IReadOnlyList<(long Id, double Value)>, IReadOnlyList<(long Id, double Value)>>? SourceAttributes { get; set; }
@@ -82,6 +86,32 @@ public sealed partial class BuffService : IGameTicker
     /// <summary>Further named groups and their SpecialStatusConfig rows. (inferred scope) Only guardian-applied buffs
     /// carry these states so far: the same groups from ordinary skills keep their previous, display-only behaviour
     /// until each state is established and tested for every source.</summary>
+    /// <summary>
+    /// The state of a buff outside those groups, from _kBuffCategory, which names the kind of control whatever the row
+    /// (BuffTagConfig: Generic Stun 1200401 and Meteor Storm's 1210701 are 13 like Stun 901601). So every skill's stun stuns.
+    /// (inferred) A beneficial row (_iType 1) carrying one of these tags is not itself that control.
+    /// </summary>
+    private int StateFor(int configId, int buffGroup, bool guardianOwned)
+    {
+        int known = StateFor(buffGroup, guardianOwned);
+        if (known != 0 || BuffConfig.Get(_data, configId) is not { } row || row.Type == 1) return known;
+        foreach (long category in row.BuffCategory)
+            if (ControlCategoryState(category) is var state and not 0) return state;
+        return 0;
+    }
+
+    private static int ControlCategoryState(long category) => category switch
+    {
+        13 => 18, // Stun
+        12 => 19, // Sleep
+        6 => 20, // Silence
+        9 => 11, // Frozen
+        10 => 12, // Petrify
+        8 => 21, // Immobilize
+        16 => 3, // Knock-Up
+        _ => 0,
+    };
+
     private static int GuardianStateFor(int buffGroup) => buffGroup switch
     {
         SuperArmorGroup => 22, // Super Armor
@@ -132,13 +162,15 @@ public sealed partial class BuffService : IGameTicker
         int stackType = (int)GameData.Int(row, "_iStackType");
         int maxStack = (int)Math.Max(1, GameData.Int(row, "_iMaxStack"));
         // Inferred server policy from enum_BuffStackType: named layer types add a pile; others refresh.
-        int pile = explicitPileCount ?? (existing != null && stackType is 1 or 2 or 3 or 7
+        int pile = explicitPileCount ?? (existing != null && existing.ExpireMs > now && stackType is 1 or 2 or 3 or 7
             ? Math.Min(maxStack, existing.PileCount + 1) : 1);
+        // LC_Buff_System.UpdateBuffData copies a known GUID's times, stack and source, never its config: a new level under the old GUID would keep the old row on the client.
+        if (existing != null && existing.ConfigId != configId) { await RemoveAsync(p, existing); existing = null; }
         IEnumerable<(long Id, double Value)> pairs = GameData.Pairs(row, "_kChangeAttri");
         if (SourceAttributes != null) pairs = SourceAttributes(sourceId, row, [.. pairs]);
         var changes = pairs.Select(c => (c.Id, c.Value * pile * attributeMultiplier)).ToList();
         var buff = new ActiveBuff(existing?.Guid ?? Interlocked.Increment(ref _guids), configId,
-            now + durationMs, durationMs, changes, sourceId, pile, StateOrdinal: StateFor(group, guardianOwned),
+            now + durationMs, durationMs, changes, sourceId, pile, StateOrdinal: StateFor(configId, group, guardianOwned),
             ShieldRemaining: stackShield ? SkillShieldRules.Stacked(LiveShield(existing), shieldAmount, pile) : Math.Max(0, shieldAmount),
             IsGuardianOwned: guardianOwned, ShieldDebuffImmunity: shieldDebuffImmunity, HpFloorBasisPoints: hpFloorBasisPoints);
         if (existing != null) p.Buffs.Remove(existing);
@@ -224,8 +256,8 @@ public sealed partial class BuffService : IGameTicker
         if (buff.Changes.Count > 0) await _character.RefreshStatsAsync(p);
     }
 
-    /// <summary>A guardian's buff on a unit: unlike ordinary unit buffs, it carries its control state and counts
-    /// toward the unit's combat attributes (<see cref="GuardianUnitAttributes"/>).</summary>
+    /// <summary>A guardian's buff on a unit: unlike an ordinary unit buff that is no debuff, it counts
+    /// toward the unit's combat attributes (<see cref="UnitCombatAttributes"/>).</summary>
     internal Task AddGuardianAsync(WorldUnit unit, int configId, int durationMs, long sourceId, double attributeMultiplier = 1) =>
         AddSupportAsync(unit, configId, durationMs, sourceId, attributeMultiplier: attributeMultiplier, guardianOwned: true);
 
@@ -240,12 +272,14 @@ public sealed partial class BuffService : IGameTicker
         double attributeMultiplier = 1, bool guardianOwned = false)
     {
         if (_data.Row("BuffConfig", configId) is not { } row || GameData.Int(row, "_iBuffID") <= 0) return;
-        if (_unitBuffs.TryGetValue(unit.Uid, out var live) && ImmuneTo(live, row, guardianOwned)) return;
+        _unitBuffs.TryGetValue(unit.Uid, out var live);
+        // The resist first: Element Control strikes on it, and an MVP's born buff answers both.
         if (live != null && sourceId != unit.Uid && UnitResistsControl(live, row))
         {
             foreach (var handler in ControlResisted) await handler(unit, sourceId, row);
             return;
         }
+        if (live != null && ImmuneTo(live, row)) return;
         if (durationMs <= 0) durationMs = (int)GameData.Int(row, "_iTime");
         if (durationMs <= 0) durationMs = 60000;
         if (sourceId != unit.Uid && !ApplyDecay(unit.Uid, unit.SceneEntry, configId, ref durationMs)) return;
@@ -257,13 +291,14 @@ public sealed partial class BuffService : IGameTicker
         int stackType = (int)GameData.Int(row, "_iStackType");
         int maxStack = (int)Math.Max(1, GameData.Int(row, "_iMaxStack"));
         // (inferred) Match the player path: named layer types increase piles; other types refresh.
-        int pile = existing != null && stackType is 1 or 2 or 3 or 7
+        int pile = existing != null && existing.ExpireMs > MonsterService.NowMs && stackType is 1 or 2 or 3 or 7
             ? Math.Min(maxStack, existing.PileCount + 1) : 1;
+        if (existing != null && existing.ConfigId != configId) { await RemoveUnitBuffAsync(unit, existing); existing = null; }
         var buff = new ActiveBuff(existing?.Guid ?? Interlocked.Increment(ref _guids), configId,
             MonsterService.NowMs + durationMs, durationMs,
             [.. GameData.Pairs(row, "_kChangeAttri").Select(c => (c.Id, c.Value * pile * attributeMultiplier))], sourceId, pile,
             ShieldRemaining: Math.Max(0, shieldAmount), IsGuardianOwned: guardianOwned,
-            StateOrdinal: StateFor(group, guardianOwned));
+            StateOrdinal: StateFor(configId, group, guardianOwned));
         if (existing != null) list.Remove(existing);
         list.Add(buff);
         TrackPeriodic(null, unit, buff);
@@ -320,6 +355,14 @@ public sealed partial class BuffService : IGameTicker
     }
 
     /// <summary>SkillConfig._kCost type 3 consumes piles of a BuffConfig group. The tuple's id is a group (inferred).</summary>
+    /// <summary>A buff at this many piles, whatever its stack type: Firepower Loaded's stack type 6 only refreshes, and it starts at its 3 attacks.</summary>
+    internal Task AddPilesAsync(GameSession p, int configId, int durationMs, long sourceId, int piles) =>
+        AddCoreAsync(p, configId, durationMs, sourceId, piles);
+
+    /// <summary>How many piles of a buff group a monster holds.</summary>
+    internal int UnitPiles(WorldUnit unit, int buffGroup) => _unitBuffs.TryGetValue(unit.Uid, out var list)
+        ? list.Where(b => b.ExpireMs > MonsterService.NowMs && b.ConfigId / 100 == buffGroup).Sum(b => b.PileCount) : 0;
+
     public bool HasBuffPiles(GameSession p, int buffGroup, int count) => count > 0
         && p.Buffs.Where(b => b.ExpireMs > MonsterService.NowMs && _data.Row("BuffConfig", b.ConfigId) is { } row
             && GameData.Int(row, "_iBuffID") == buffGroup).Sum(b => b.PileCount) >= count;
@@ -419,6 +462,7 @@ public sealed partial class BuffService : IGameTicker
             ForbidInfo = new AoiObjForbidInfo { Data = Mask(p.ForbiddenBits) },
             StaggerInfo = new AoiObjStaggerInfo { StaggerMask = p.StaggerBits },
         });
+        if (ControlChanged is { } changed) await changed(p);
     }
 
     private void RecomputeControl(GameSession p)

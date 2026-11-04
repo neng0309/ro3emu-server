@@ -43,6 +43,8 @@ public sealed class GameSession(PhonestChannel channel, TrafficLog traffic)
 
     /// <summary>The signed-in account; set only by <see cref="SessionRegistry.SignInAsync"/> (tests may set it).</summary>
     public string? Account { get; internal set; }
+    /// <summary>Account as the client spelled it at SDK login (AccountStore.ClientAccount), for what the client compares with it.</summary>
+    public string? ClientAccount { get; set; }
 
     /// <summary>A message was refused before its stage (GameMessageHandler); only the first one is logged.</summary>
     internal bool EarlyMessageRefused { get; set; }
@@ -229,7 +231,17 @@ public sealed class GameSession(PhonestChannel channel, TrafficLog traffic)
     /// <summary>Quest state (AUTO_SYNC 5027), loaded at login by TaskService.</summary>
     public Romsg.DBTaskInfo? Tasks { get; set; }
     public TaskRuntimeState TaskRuntime { get; set; } = new();
-    public bool InCutScene { get => TaskRuntime.InCutScene; set => TaskRuntime.InCutScene = value; }
+    public bool InCutScene
+    {
+        get => TaskRuntime.InCutScene;
+        set
+        {
+            if (value && !TaskRuntime.InCutScene) CutSceneSinceMs = MonsterService.NowMs;
+            TaskRuntime.InCutScene = value;
+        }
+    }
+    /// <summary>When this login's cutscene began; 0 when one was only restored from the saved state.</summary>
+    public long CutSceneSinceMs { get; private set; }
 
     /// <summary>Serializes quest transitions and source replay independently of the inventory transaction lock.</summary>
     public SemaphoreSlim TaskLock { get; } = new(1, 1);
