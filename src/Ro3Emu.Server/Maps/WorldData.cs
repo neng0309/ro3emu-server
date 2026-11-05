@@ -86,6 +86,9 @@ public sealed class MapWorld
     /// <summary>The points of each guide route, id -> (x, y, z) list (a scripted ride walks one).</summary>
     public IReadOnlyDictionary<long, IReadOnlyList<(float X, float Y, float Z)>> GuidePaths { get; init; } =
         new Dictionary<long, IReadOnlyList<(float X, float Y, float Z)>>();
+    /// <summary>The points of each patrol of kPatrolList, id -> (x, y, z) list (what a scripted scene's unit flies).</summary>
+    public IReadOnlyDictionary<long, IReadOnlyList<(float X, float Y, float Z)>> PatrolPaths { get; init; } =
+        new Dictionary<long, IReadOnlyList<(float X, float Y, float Z)>>();
 
     /// <summary>Dungeon m_kGroups joined to m_kMonsterSpawnPoints; templates/timing belong to PetFloorConfig.</summary>
     public IReadOnlyDictionary<int, IReadOnlyList<SpawnPoint>> DungeonGroups { get; init; } = new Dictionary<int, IReadOnlyList<SpawnPoint>>();
@@ -143,8 +146,8 @@ public sealed class MapWorld
     /// that can be walked to from where players arrive (born, revive, Kafra and portal arrivals). Field maps carry
     /// points on walkable strips cut off from the play area, such as Payon Forest's (10220) northern edge at z 398-399;
     /// landing there strands the player. Without a nav grid, or with no arrival on walkable ground, every spot counts.
-    /// The reachability flood fill takes up to about 400 ms on a field map, so it runs off the game loop
-    /// (<see cref="WarmRandomSpots"/>, started when the map loads); until it finishes every walkable spot counts.
+    /// The reachability flood fill takes up to about 400 ms on a field map, so it runs off the game loop, once, for the
+    /// first wing used on the map (<see cref="WarmRandomSpots"/>); until it finishes every walkable spot counts.
     /// </summary>
     public IReadOnlyList<MapPoint> RandomSpots => _randomSpots ?? WalkableSpots;
 
@@ -201,11 +204,19 @@ public sealed partial class WorldData(IOptions<ServerOptions> options, GameData 
     {
         lock (_sync)
         {
-            if (_maps.TryGetValue(sceneEntry, out var map)) return map;
-            _maps[sceneEntry] = map = Load(sceneEntry);
-            map?.WarmRandomSpots().ContinueWith(t => FlyWingSpotsFailed(log, sceneEntry, t.Exception),
-                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            if (!_maps.TryGetValue(sceneEntry, out var map)) _maps[sceneEntry] = map = Load(sceneEntry);
             return map;
+        }
+    }
+
+    /// <summary>The spots a Fly Wing picks from on this map; the search ran or runs once, and a failed one leaves every walkable spot.</summary>
+    public async Task<IReadOnlyList<MapPoint>> RandomSpotsAsync(MapWorld map, long sceneEntry)
+    {
+        try { return await map.WarmRandomSpots(); }
+        catch (Exception e)
+        {
+            FlyWingSpotsFailed(log, sceneEntry, e);
+            return map.RandomSpots;
         }
     }
 
@@ -411,7 +422,7 @@ public sealed partial class WorldData(IOptions<ServerOptions> options, GameData 
         {
             SceneEntry = sceneEntry, Born = born, Revive = revive, Npcs = npcs, Points = points, Nav = map.Nav, SpawnGroups = spawnGroups,
             GatheringPoints = LoadGatheringPoints(se, sceneEntry), DungeonGroups = LoadDungeonGroups(se), Regions = LoadRegions(se),
-            GuideRoutes = SceneEditorGuides.RouteIds(se), GuidePaths = SceneEditorGuides.Paths(se),
+            GuideRoutes = SceneEditorGuides.RouteIds(se), GuidePaths = SceneEditorGuides.Paths(se), PatrolPaths = SceneEditorGuides.Patrols(se),
             AirWalls = SceneEditorAirWalls.Read(se)
         };
     }

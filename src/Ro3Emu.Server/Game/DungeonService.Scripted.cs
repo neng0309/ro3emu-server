@@ -30,9 +30,6 @@ public sealed partial class DungeonService
     private long _sceneActorSerial;
     private long _sceneActorBuffGuid = 1L << 56;
 
-    /// <summary>The draw of a step's shuffled actors (ScriptedStep.Shuffle): a uniform integer below its bound; tests pin it.</summary>
-    internal Func<int, int> ShuffleRoll { get; set; } = bound => Random.Shared.Next(bound);
-
     /// <summary>
     /// A scene actor: NPCConfig _iNPCType 1 is created by the client as a monster unit (entity type 1, with its HP
     /// and level so the head bar renders), 2 as an NPC (entity type 2, which TriggerNpcInteract looks up by config id).
@@ -86,9 +83,11 @@ public sealed partial class DungeonService
     {
         a.StepSeen.Clear();
         a.StepHeld = a.StepHoldOver = false;
+        // Whoever still sits on what the last step showed gets off before it goes.
+        if (a.Riders.Count > 0) await PutDownRidersAsync(a);
         // A fight-only step has no client event to wait for: its kills complete it.
         a.StepDone = step.Complete.Count == 0;
-        await SyncSceneActorsAsync(a, step.Placed(ShuffleRoll));
+        await SyncSceneActorsAsync(a, step.Actors);
         await SyncCompanionsAsync(a, step.Companions);
         a.StepGeneration++;
         if (step.Seek is { } seek) StartSeek(a, seek);
@@ -203,37 +202,12 @@ public sealed partial class DungeonService
         if (code != 0) return true;
         // Dracula's Lair: a bush search may find the key; its finder is the rescuer, the only one the cage opens for.
         if (a!.Dracula is { } dracula) await dracula.Owner.InteractedAsync(a, s, actor!.NpcId);
-        await StrikeAsync(a!, s, actor!, req.InteractionId);
+        await BoardCannonAsync(a!, s, actor!, req.InteractionId);
         await SeatRiderAsync(a!, s, actor!, (int)req.InteractionId);
         var events = new List<(Kind, long)> { (Kind.Interaction, req.InteractionId) };
         if (_catalog.DungeonMessage(req.InteractionId) is { } message) events.Add((Kind.Message, message));
         await StepEventAsync(a!, s, events, actor);
         return true;
-    }
-
-    /// <summary>
-    /// A step's strike: the interaction (the airship's 'Board the Cannon') casts its skill from the player at the nearest
-    /// living monster of the step's fight, through the ordinary extra-cast path (damage, kills, the tracker) (inferred:
-    /// the original's cannon gameplay status is a server script the client does not ship). With shots, the k-th strike on
-    /// a target first brings it down to its (shots - k) / shots share of the maximum HP, so that many strikes sink it at
-    /// any player level, even when the far target resets between them (inferred: the rapid fire button stood for a volley).
-    /// </summary>
-    private async Task StrikeAsync(Attempt a, GameSession s, SceneActorUnit actor, long interaction)
-    {
-        if (Step(a) is not { Strikes: { } strikes } || a.Settled) return;
-        foreach (var (id, skill, shots) in strikes)
-        {
-            if (id != interaction || _data.Row("SkillConfig", skill) is not { } row) continue;
-            var target = a.Room.Monsters.Where(m => !m.Dead && m.Hp > 0)
-                .OrderBy(m => MonsterService.Distance(actor.X, actor.Z, m.X, m.Z)).FirstOrDefault();
-            if (target == null) continue;
-            if (shots > 0)
-            {
-                int struck = a.Struck[target.Uid] = a.Struck.GetValueOrDefault(target.Uid) + 1;
-                target.Hp = Math.Min(target.Hp, target.Template.MaxHp * Math.Max(0, shots - struck) / shots + 1);
-            }
-            await _combat.CastExtraAsync(s, row, [target]);
-        }
     }
 
     /// <summary>
