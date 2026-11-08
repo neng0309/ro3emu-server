@@ -373,12 +373,15 @@ Reconstructed scripted scenes (`Reconstructed/scripted-scenes.json`, same switch
     interaction 5300021, message 5300022), 'Help the Professor Up' (5300026, message 5300023) and the chest (5300052,
     message 5300024), each interaction opened by buff group 53014.
   - The airship (1000501): the chitchat with Bobo, the captain, Wule and Boya (their gated auto-range bubbles
-    5300031-5300034, all four), the boarding and the Evil Boss as before, the look around after the battle (five
+    5300031-5300034), the boarding and the Evil Boss as before, the look around after the battle (five
     bubbles 5300048-5300052) and the talk with the injured captain (dialogue 530003802, whose option triggers
     interaction 5300039 and message 5300039). Stage 2, the cannons, is **inferred**: each 'Board the Cannon' (5300006) on
     one of the three Cannons 5300022 fires 5365001 from the player at the nearest enemy airship (5300015 at point 24,
     5300053 at 61), and three boardings sink a ship at any level; sinking both ends the stage. The original's
     UpperCannon gameplay status (GameplayStatusConfig 12) has no abilities in the client data.
+    The chitchat and the look around each end on the first crew bubble the player walks into (**inferred**): their
+    DungeonQuestConfig goal is [1], which the tracker shows without a counter, so it could never say who was still
+    missing, and waiting for every bubble left players stuck at 'Take a look around'.
   - Payon Forest (1022001): 'Cover Boya and Wule' (reach the standoff point 22 between them and Eddga), then Eddga
     with Boya and Wule (5300086/5300087) fighting beside the player as companions (below).
   - The Peco Peco nest (1051001): the Elusive Pecopeco with the Ancient Nest and Bragis shown.
@@ -425,14 +428,17 @@ Reconstructed scripted scenes (`Reconstructed/scripted-scenes.json`, same switch
   after it. The engine is generic (`DungeonService.Scripted`): nothing knows a scene, task or NPC id.
   A step may also have a ride (`after.ride`, a `m_kGuidePoints` route): when a player completes it by using an actor,
   that actor walks the route at its own `UnitConfig._fSpeed` (the Deniro: 5.25 m/s) and the participants are moved
-  with it in 100 ms forced-position steps, then the teleport and the next step follow (`DungeonService.Ride.cs`).
+  with it every 100 ms, then the teleport and the next step follow (`DungeonService.Ride.cs`). A seated rider's seat
+  carries it; a rider who is not seated is told to walk there itself (**(proven)** transType 3 ServerControl calls the
+  local player's controlled unit's `SetMoveTargetPos` in every scene, the one transition type a surface scene does not
+  ignore: `LC_Scene_Sync.lua`, `_syncUnitMoveState`) and other viewers are told as if it had walked there.
   **(inferred)**: the client has no ride rule (the route and the scene's camera animation are data with no trigger, and
   the original's server script is not shipped), so the speed, the step size and the missing mount are guesses and the
   camera animation (`mianstorybingyicamera`) is not played.
   A step may also hold (`after.hold`, ms, scaled by `ScriptedScenePacePercent`): once it is completed, the next step or the
   result waits that long, so what the step showed is not cut. **(inferred)**: the original script is not shipped and the
   client data has no duration for these, so the airship's holds are estimates (the chitchat's 13 s is the longest of its four
-  bubbles, 12 to 22 words each at `PublicParamConfig.BubblePerWordTime` 2; 2 s between boarding groups, 3 s after the Evil Boss,
+  bubbles, any of which ends it, 12 to 22 words each at `PublicParamConfig.BubblePerWordTime` 2; 2 s between boarding groups, 3 s after the Evil Boss,
   4.5 s for the captain's closing line). When a scripted scene is settled its defeated enemies keep their bodies and go by their
   own `_iBodyRemainTime` (Eddga's body stays where it fell); the living ones and the scene actors are cleared as before.
   An actor interaction whose `NPCInteractConfig._iStatusID` is a vehicle status (the Deniro's first Ride, 5300005)
