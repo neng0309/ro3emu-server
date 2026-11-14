@@ -357,6 +357,10 @@ public sealed partial class CombatService : IGameTicker
         _log.LogDebug("{Name} locks {Target}", s.Role?.Name, req.EnemyId);
     }
 
+    /// <summary>A heal's show point (player, guardian and tower pet heals): <see cref="SkillEffectData.HealPoint"/> over HitEffect's pick.</summary>
+    private int HealEffect(long scriptShow) =>
+        (int)SkillEffectData.HealPoint(_data.SkillTemplateTable("Lua_Config_EffectData"), scriptShow, HitEffect(scriptShow));
+
     /// <summary>
     /// The template's hit EffectData (hit fx, flinch, hit sound) for SkillHitInfo.showPoint: the first in
     /// [show*100, show*100+99] whose m_kDamage has m_kActionDamge, else the first with any m_kDamage.
@@ -364,18 +368,6 @@ public sealed partial class CombatService : IGameTicker
     /// Bolt 1200411, Lightning Bolt 1200503, Double Strafe 1300304) showed no hit; the bullet goes in 31120 instead
     /// (<see cref="BulletEffect"/>).
     /// </summary>
-    /// <summary>A heal's hit effect. HitEffect's fallback 1000002 plays ReceivingDamage, so a healed ally flinched: EffectData 14007800 and its family (show * 1000 + 800) hold only
-    /// the heal's own effect. Then any of the show's effects with no hit reaction, then none (inferred).</summary>
-    private int HealEffect(long scriptShow)
-    {
-        var effects = _data.SkillTemplateTable("Lua_Config_EffectData");
-        long own = scriptShow * 1000 + 800;
-        if (SkillEffectData.Find(effects, own) is { HasDamage: true }) return (int)own;
-        for (long id = scriptShow * 100; id < scriptShow * 100 + 100; id++)
-            if (SkillEffectData.Find(effects, id) is { HasDamage: true, HasHitReaction: false }) return (int)id;
-        return 0;
-    }
-
     private int HitEffect(long scriptShow)
     {
         var effects = _data.SkillTemplateTable("Lua_Config_EffectData");
@@ -387,6 +379,16 @@ public sealed partial class CombatService : IGameTicker
             if (first == 0) first = (int)id;
         }
         return first != 0 ? first : 1000002;
+    }
+
+    /// <summary>The hit effect a buff-only cast shows on the units it buffed: HitEffect's pick when it is an entry of the show's own
+    /// range that draws a prefab or a flash, else 0. HitEffect's fallback 1000002 is a struck unit's hit (fx_common_hit_1, ReceivingDamage,
+    /// the hit sound): a buff showing it would make every ally flinch as if struck (Sacred Lily's range 430400-430499 has no hit entry).</summary>
+    private int BuffHitEffect(long scriptShow)
+    {
+        int id = HitEffect(scriptShow);
+        return id >= scriptShow * 100 && id < scriptShow * 100 + 100
+            && SkillEffectData.Find(_data.SkillTemplateTable("Lua_Config_EffectData"), id) is { HasHitVisual: true } ? id : 0;
     }
 
     /// <summary>

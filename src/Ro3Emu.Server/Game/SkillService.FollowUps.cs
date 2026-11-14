@@ -77,11 +77,75 @@ public sealed partial class SkillService
     {
         foreach (var slot in state.SkillWheel.WhellSkills.Values)
             if (slot.SkillConfigId > 0) slot.SkillConfigId = (int)FollowUpOf(session, slot.SkillConfigId);
+        ApplyBuffModes(session, state);
         session.FollowUpsShown = ShownStatuses(session);
     }
 
     private string ShownStatuses(GameSession session) =>
-        string.Join(',', session.Buffs.Where(b => b.ExpireMs > MonsterService.NowMs && FollowUps.ContainsKey(b.ConfigId)).Select(b => b.ConfigId).Order());
+        string.Join(',', session.Buffs.Where(b => b.ExpireMs > MonsterService.NowMs && FollowUps.ContainsKey(b.ConfigId)).Select(b => b.ConfigId).Order())
+        + "|" + ShownModes(session);
+
+    private Dictionary<(long Group, long Level, long Mode), long>? _modeRows;
+
+    /// <summary>The configured mode rows (SkillConfig._iMode above 0) by group, level and mode.</summary>
+    private Dictionary<(long Group, long Level, long Mode), long> ModeRows => _modeRows ??= SkillConfig.All(_data)
+        .Where(r => r.Mode > 0).GroupBy(r => (r.SkillId, r.Level, r.Mode)).ToDictionary(g => g.Key, g => g.First().Id);
+
+    /// <summary>The mode (BuffConfig type 15) a live buff gives this row's group, and the latest end of the buffs that give it;
+    /// 0 when no buff does (a mode from a talent or a mount is told by 31132 and 31027, not by the wheel). A buff that lasts until
+    /// it is spent (<see cref="ActiveBuff.UntilSpent"/>) gives the mode no end: <paramref name="end"/> is then 0.</summary>
+    private long BuffMode(GameSession session, SkillConfig row, out long end)
+    {
+        end = 0;
+        bool given = false, untilSpent = false;
+        long now = MonsterService.NowMs;
+        int group = (int)row.SkillId;
+        var tags = SkillParameterRules.CategoriesOf(_data, row.Row);
+        foreach (var buff in session.Buffs)
+            if (buff.ExpireMs > now && GivesMode(buff, group, tags))
+            {
+                given = true;
+                untilSpent |= buff.UntilSpent;
+                end = Math.Max(end, buff.ExpireMs);
+            }
+        if (!given) return 0;
+        if (untilSpent) end = 0; // (inferred) a mode that lasts until spent has no end to count down to
+        long mode = SkillParameterRules.Mode(group, tags, SkillParameterRules.Active(session, _data));
+        return ModeRows.ContainsKey((row.SkillId, row.Level, mode)) ? mode : 0;
+    }
+
+    private bool GivesMode(ActiveBuff buff, int group, int[] tags) =>
+        SkillParameterRules.BuffModifiers(_data, buff.ConfigId).Any(mod => mod.Type == 15 && SkillParameterRules.Matches(mod, group, tags));
+
+    /// <summary>While a buff selects a mode, the slot of that skill shows the mode's row with the buff's end as its countdown
+    /// (Genesis 5025: Focused Arrow Strike under Unlimited Shooting is the mode 1 row, enabled, mode 1, highlightEndTimeMs the
+    /// buff's end); originSkillWheel keeps the skill's own row. A mode with no end (a buff until spent: Cannon Enhance on Arm Cannon)
+    /// sends highlightEndTimeMs 0, which UI_Sys_Main_JoyStickSkillItemWidgetBaseCtrl._refreshSkillHighCountDown draws no countdown for;
+    /// the server's bound sent as the end showed 3598 seconds counting down.</summary>
+    private void ApplyBuffModes(GameSession session, DBSkillData state)
+    {
+        foreach (var (key, slot) in state.SkillWheel.WhellSkills)
+        {
+            if (key < 1 || key > BarSlots || SkillConfig.Get(_data, slot.SkillConfigId) is not { Mode: 0 } row) continue;
+            long mode = BuffMode(session, row, out long end);
+            if (mode == 0 || !ModeRows.TryGetValue((row.SkillId, row.Level, mode), out long modeRow)) continue;
+            slot.SkillConfigId = (int)modeRow;
+            slot.Enable = true;
+            slot.Mode = (int)mode;
+            slot.HighlightEndTimeMs = end;
+        }
+    }
+
+    private string ShownModes(GameSession session)
+    {
+        if (session.Progress == null) return "";
+        var shown = new List<string>();
+        foreach (int group in session.Progress.SkillBar.Values.Distinct().Order())
+            if (Level(session.Progress, group) is var level and > 0 && SkillConfig.Get(_data, RealId(group, level)) is { } row
+                && BuffMode(session, row, out long end) is var mode and > 0)
+                shown.Add($"{group}:{mode}:{end}");
+        return string.Join(',', shown);
+    }
 
     /// <summary>After a buff change: a follow-up status that came or went changes the wheel the client was sent.</summary>
     internal async Task RefreshFollowUpsAsync(GameSession session)
