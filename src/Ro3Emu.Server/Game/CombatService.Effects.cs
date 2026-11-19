@@ -42,6 +42,9 @@ public sealed partial class CombatService
 {
     private long _skillObjectIds = 0x600000000000L;
 
+    /// <summary>SkillConfig._kScriptLogic of a flying mount's take-off/landing (both pairs share these two scripts).</summary>
+    private const string FlightTakeOffScript = "normal_leisuremount_upper", FlightLandingScript = "normal_leisuremount_below";
+
     private async Task ResolveCastAsync(GameSession s, ActiveSkillCast action)
     {
         var row = action.Row;
@@ -56,6 +59,8 @@ public sealed partial class CombatService
             await OwnSkillLanded(s, row);
             return;
         }
+        // A flying mount's take-off/landing only moves its rider; their enemy-selector templates hit nobody.
+        if (Script(row) is FlightTakeOffScript or FlightLandingScript) { await MountFlightSwitchAsync(s, action); return; }
         if (IsResurrection(row))
         {
             var target = FindPlayer(s, action.Request.TargetId, dead: true);
@@ -96,6 +101,21 @@ public sealed partial class CombatService
         if (Script(row) == "AxeLeapAttack") { await HighEnergyTakeOffAsync(s, action); return; }
         if (Script(row) == "huixuanshizizhan") { await ApplyEffectsAsync(s, WithRow(action, await CrossRipperRowAsync(s, row)), action.Request.TargetPos ?? action.Origin); return; }
         await ApplyEffectsAsync(s, action, action.Request.TargetPos ?? action.Origin);
+    }
+
+    /// <summary>
+    /// The take-off/landing (<see cref="MountFlightSwitch"/>) starts its _kLogicData[1] ms after the cast's action began
+    /// (0 for the balloon's pair, 1133 ms for the dragon's take-off, which climbs only after its Takeoff animation has
+    /// begun), and only while that cast still runs.
+    /// </summary>
+    private async Task MountFlightSwitchAsync(GameSession s, ActiveSkillCast action)
+    {
+        if (MountFlightSwitch is not { } flight) return;
+        long delay = new SkillConfig(action.Row).LogicData is [_, var after, ..] ? Math.Max(0, after) : 0;
+        long wait = action.StartMs + action.ChantMs + delay - Now;
+        var (skill, aimed) = (action.Request.SkillId, action.Request.TargetPos?.Clone());
+        if (wait <= 0) { await flight(s, skill, aimed); return; }
+        ScheduleRuntime(action.WorldScene, TimeSpan.FromMilliseconds(wait), () => Live(s, action) ? flight(s, skill, aimed) : Task.CompletedTask);
     }
 
     /// <summary>Chain Lightning: "the designated ST enemy ... and up to ${3} Other enemies within ${2} meters of the target". Its _kRange is [0].</summary>
@@ -725,16 +745,14 @@ public sealed partial class CombatService
         // The rest of the show plays where the charge ended: a stop reported there is no walk that interrupts the cast.
         if (move.Kind is DisplaceKind.CasterToTarget or DisplaceKind.CasterToPoint) action.Origin = end.Clone();
         var start = s.Position.Clone();
+        int ms = move.Ms > 0 ? move.Ms : action.ActionMs;
         await ToPlayerAndViewersAsync(s, SkillMove, new SkillStartMoveNotify
         {
             EntityID = (ulong)s.Role!.Id, StartPos = start, EndPos = end, SkillConfigId = action.Request.SkillId,
-            EffectId = move.EffectId, StartTimestampMs = Now, MoveType = 1, Face = action.Request.Face,
-            MoveTimeMs = move.Ms > 0 ? move.Ms : action.ActionMs,
+            EffectId = move.EffectId, StartTimestampMs = Now, MoveType = 1, Face = action.Request.Face, MoveTimeMs = ms,
         });
         // MoveAsync updates persistent position and AOI membership from the same authoritative destination.
-        s.PreviousPosition = start;
-        s.Position = end;
-        s.SkillMovedUntilMs = Now + (move.Ms > 0 ? move.Ms : action.ActionMs);
+        s.CarryBySkill(start, end, Now, ms);
         s.LastWalkUtc = DateTime.UtcNow; // the dash ends the walk it interrupted (GameSession.WalkReportLag)
         s.Walking = false;
         await _world.MoveAsync(s, new WalkReq { Pos = end, Dir = s.Face, Face = s.Face, BStop = true }, forceTeleport: true);
@@ -815,9 +833,7 @@ public sealed partial class CombatService
             EntityID = (ulong)role.Id, StartPos = start, EndPos = end, SkillConfigId = skillId, EffectId = effectId,
             MoveType = 2, StartTimestampMs = Now, Face = p.Face, MoveTimeMs = Math.Max(1, ms),
         });
-        p.PreviousPosition = start;
-        p.Position = end;
-        p.SkillMovedUntilMs = Now + Math.Max(1, ms);
+        p.CarryBySkill(start, end, Now, ms);
         p.Walking = false;
         await _world.MoveAsync(p, new WalkReq { Pos = end, Dir = p.Face, Face = p.Face, BStop = true }, forceTeleport: true);
     }
